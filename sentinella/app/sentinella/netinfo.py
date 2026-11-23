@@ -78,8 +78,13 @@ def detect_networks() -> list[ipaddress.IPv4Network]:
 def resolve_networks(configured: list[str]) -> list[ipaddress.IPv4Network]:
     nets = []
     for item in configured or []:
+        text = str(item).strip()
+        if text and "/" not in text:
+            # "192.168.1.0" senza maschera verrebbe letto come un solo indirizzo.
+            log.warning("Rete %s senza maschera: la considero %s/24", text, text)
+            text += "/24"
         try:
-            net = ipaddress.ip_network(str(item).strip(), strict=False)
+            net = ipaddress.ip_network(text, strict=False)
         except ValueError:
             log.warning("Rete non valida nelle opzioni, ignorata: %r", item)
             continue

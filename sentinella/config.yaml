@@ -1,5 +1,5 @@
 name: Sentinella
-version: "0.2.0"
+version: "0.2.1"
 slug: sentinella
 description: Controllo di sicurezza della rete di casa - dispositivi, porte aperte, router
 url: https://github.com/StefanoCasali/sentinell-ha
@@ -33,3 +33,8 @@ schema:
   active_probes: bool
   notify: bool
   device_entities: bool
+  # Solo per un broker diverso dall'add-on Mosquitto: con Mosquitto le credenziali arrivano dal Supervisor.
+  mqtt_host: str?
+  mqtt_port: port?
+  mqtt_username: str?
+  mqtt_password: password?

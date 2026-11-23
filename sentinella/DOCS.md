@@ -94,6 +94,17 @@ automation:
 | `active_probes` | attivo | Verifica se i servizi accettano accessi senza password |
 | `notify` | attivo | Notifica in Home Assistant a ogni incidente |
 | `device_entities` | attivo | Crea un sensore "In rete" per ogni dispositivo |
+| `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | vuoto | Solo per un broker diverso dall'add-on Mosquitto |
+
+Scrivi le reti con la maschera (`192.168.1.0/24`); senza maschera viene assunto `/24`.
+
+## Se i sensori non compaiono
+
+Apri la scheda **Stato e cronologia** del pannello: la prima scheda dice quale canale è in uso (MQTT, API o nessuno), quante entità sono state pubblicate e, se MQTT non è utilizzabile, perché. La stessa informazione è nel log dell'add-on, nella riga `Sensori verso Home Assistant`.
+
+- **Canale MQTT**: le entità sono sotto Impostazioni > Dispositivi e servizi > MQTT, dispositivo "Sentinella".
+- **Canale API**: non c'è un dispositivo; cerca `sentinella` in Strumenti per sviluppatori > Stati.
+- Per passare a MQTT serve l'add-on Mosquitto avviato con l'integrazione MQTT configurata, oppure le opzioni `mqtt_*` per un altro broker.
 
 ## Prima scansione
 

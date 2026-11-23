@@ -8,4 +8,5 @@ COPY app /app
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
-CMD ["python3", "-m", "sentinella"]
+# with-contenv restituisce al processo l'ambiente del container (SUPERVISOR_TOKEN), che s6 altrimenti azzera.
+CMD ["sh", "-c", "if [ -x /command/with-contenv ]; then exec /command/with-contenv python3 -m sentinella; else exec python3 -m sentinella; fi"]

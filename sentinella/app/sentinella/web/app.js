@@ -275,9 +275,27 @@ function renderRouter() {
 
 // ---------------------------------------------------------------- cronologia
 
+const CHANNELS = { mqtt: "MQTT", api: "API di Home Assistant", nessuno: "Nessuno" };
+
+function haCard() {
+  const ha = state.ha || {};
+  const facts = [
+    ["Canale", CHANNELS[ha.channel] || ha.channel || "-"],
+    ["Dettaglio", ha.detail || "-"],
+    ["Entità pubblicate", ha.entities || 0],
+    ["Ultimo invio riuscito", fmt(ha.last_ok)],
+  ];
+  if (ha.error) facts.push(["Errore", ha.error]);
+  if (ha.channel !== "mqtt" && ha.mqtt_reason) facts.push(["Perché non MQTT", ha.mqtt_reason]);
+  return h("div", { class: "card sev " + (ha.error || ha.channel === "nessuno" ? "high" : "okc") },
+    h("h2", {}, "Sensori verso Home Assistant"),
+    h("div", { class: "table-wrap" }, h("table", {}, h("tbody", {},
+      facts.map(([k, v]) => h("tr", {}, h("th", {}, k), h("td", {}, v)))))));
+}
+
 function renderHistory() {
-  if (!state.scans.length) return [h("div", { class: "card empty" }, "Nessuna scansione eseguita.")];
-  return [h("div", { class: "card table-wrap" }, h("table", {},
+  if (!state.scans.length) return [haCard(), h("div", { class: "card empty" }, "Nessuna scansione eseguita.")];
+  return [haCard(), h("div", { class: "card table-wrap" }, h("table", {},
     h("thead", {}, h("tr", {}, ["Data", "Durata", "Dispositivi", "Critici/alti", "Medi", "Bassi/info"].map((t) => h("th", {}, t)))),
     h("tbody", {}, [...state.scans].reverse().map((s) => h("tr", {},
       h("td", {}, fmt(s.ts)), h("td", {}, s.duration + " s"), h("td", {}, s.devices),

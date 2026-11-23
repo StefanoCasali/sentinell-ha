@@ -30,6 +30,7 @@ class Engine:
         self.status = {"running": False, "phase": "", "error": None, "next_scan": None}
         self._scan_lock = threading.Lock()
         self._publish_lock = threading.Lock()
+        ha.configure(options)
 
     # ------------------------------------------------------------------ scansione
 
@@ -270,17 +271,19 @@ class Engine:
     # ------------------------------------------------------------------ Home Assistant
 
     def publish(self) -> None:
+        # Un errore qui non deve mai fermare le scansioni: lo si registra e lo si mostra nel pannello.
         with self._publish_lock:
-            with self.store.lock:
-                missing = [i["title"] for i in rules.ROUTER_CHECKLIST
-                           if not self.store.data["checklist"].get(i["id"])]
-                status = {**self.status, "checklist_total": len(rules.ROUTER_CHECKLIST),
-                          "checklist_missing": missing}
-                items = entities.build(self.store.data, status, bool(self.options.get("device_entities", True)))
             try:
+                with self.store.lock:
+                    missing = [i["title"] for i in rules.ROUTER_CHECKLIST
+                               if not self.store.data["checklist"].get(i["id"])]
+                    status = {**self.status, "checklist_total": len(rules.ROUTER_CHECKLIST),
+                              "checklist_missing": missing}
+                    items = entities.build(self.store.data, status, bool(self.options.get("device_entities", True)))
                 ha.publish(items)
-            except Exception:
+            except Exception as exc:
                 log.exception("Pubblicazione verso Home Assistant non riuscita")
+                ha.status["error"] = f"errore interno: {exc}"
 
     def publish_async(self) -> None:
         threading.Thread(target=self.publish, name="publish", daemon=True).start()
@@ -305,7 +308,6 @@ class Engine:
 
     def run_forever(self) -> None:
         time.sleep(5)
-        log.info("Canale verso Home Assistant: %s", ha.channel())
         while True:
             self.scan()
             interval = max(1, int(self.options.get("scan_interval_hours", 6))) * 3600
@@ -407,6 +409,7 @@ class Engine:
                              key=lambda d: (not d["online"], ipaddress.ip_address(d["ip"])))
             return {
                 "status": dict(self.status),
+                "ha": dict(ha.status),
                 "counts": entities.counts(data),
                 "score": entities.score(data),
                 "findings": findings,

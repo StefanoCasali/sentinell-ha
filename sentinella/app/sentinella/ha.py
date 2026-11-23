@@ -31,10 +31,49 @@ MAIN_DEVICE = {
 }
 
 _mqtt_cache = {"at": 0.0, "settings": None}
+_manual: dict | None = None
+
+TOKEN_VAR = "SUPERVISOR_TOKEN"
+# s6-overlay (init dell'immagine base) non passa l'ambiente del container al processo:
+# lo conserva in questi file, da cui va riletto.
+S6_ENV_DIRS = ("/run/s6/container_environment", "/var/run/s6/container_environment")
+_token_cache: list[str] = []
+
+
+def _token() -> str | None:
+    if _token_cache:
+        return _token_cache[0]
+    value = os.environ.get(TOKEN_VAR)
+    for folder in S6_ENV_DIRS:
+        if value:
+            break
+        try:
+            with open(os.path.join(folder, TOKEN_VAR), encoding="utf-8") as handle:
+                value = handle.read().strip()
+        except OSError:
+            continue
+    if value:
+        _token_cache.append(value)
+    return value or None
+
+# Esito dell'ultimo invio, mostrato nel pannello per capire dove finiscono i sensori.
+status = {"channel": "nessuno", "detail": "fuori da Home Assistant: nessun sensore pubblicato",
+          "entities": 0, "last_ok": None, "error": None, "mqtt_reason": None}
+
+
+def configure(options: dict) -> None:
+    """Broker indicato a mano nelle opzioni: ha la precedenza su quello offerto dal Supervisor."""
+    global _manual
+    host = str(options.get("mqtt_host") or "").strip()
+    _manual = {
+        "host": host, "port": int(options.get("mqtt_port") or 1883),
+        "username": options.get("mqtt_username") or None,
+        "password": options.get("mqtt_password") or None, "ssl": False,
+    } if host else None
 
 
 def _request(url: str, payload=None, method=None):
-    token = os.environ.get("SUPERVISOR_TOKEN")
+    token = _token()
     if not token:
         return None
     req = urllib.request.Request(
@@ -57,10 +96,19 @@ def _request(url: str, payload=None, method=None):
 
 def mqtt_settings() -> dict | None:
     """Credenziali del broker fornite dal Supervisor (None se non c'è un broker)."""
+    if _manual:
+        return _manual
     now = time.time()
-    if now - _mqtt_cache["at"] > 600:
+    # Senza broker si riprova spesso: Mosquitto può essere installato o avviato dopo Sentinella.
+    if now - _mqtt_cache["at"] > (600 if _mqtt_cache["settings"] else 60):
         reply = _request(f"{SUPERVISOR}/services/mqtt")
-        _mqtt_cache.update(at=now, settings=(reply or {}).get("data") or None)
+        settings = (reply or {}).get("data") or None
+        if settings and not settings.get("host"):
+            settings = None
+        _mqtt_cache.update(at=now, settings=settings)
+        status["mqtt_reason"] = None if settings else (
+            "il Supervisor non mette a disposizione un broker MQTT: l'add-on Mosquitto non è installato o "
+            "non è avviato. Per un broker diverso compila le opzioni mqtt_host, mqtt_username e mqtt_password")
     return _mqtt_cache["settings"]
 
 
@@ -106,8 +154,8 @@ def mqtt_publish(settings: dict, messages: list[tuple[str, str]]) -> bool:
             sock.sendall(b"\x10" + _varlen(len(body)) + body)
             connack = _recv_exact(sock, 4)
             if connack[0] != 0x20 or connack[3] != 0:
-                log.warning("Il broker MQTT ha rifiutato la connessione (codice %s)", connack[3])
-                return False
+                reason = {4: "utente o password errati", 5: "utente non autorizzato"}.get(connack[3], f"codice {connack[3]}")
+                raise OSError(f"connessione rifiutata dal broker ({reason})")
             for topic, payload in messages:
                 data = _mstr(topic) + payload.encode()
                 sock.sendall(b"\x31" + _varlen(len(data)) + data)  # PUBLISH, QoS 0, retain
@@ -117,7 +165,9 @@ def mqtt_publish(settings: dict, messages: list[tuple[str, str]]) -> bool:
             sock.sendall(b"\xe0\x00")
         return True
     except OSError as exc:
-        log.warning("Pubblicazione MQTT non riuscita: %s", exc)
+        where = f"{settings.get('host')}:{settings.get('port') or 1883}"
+        status["mqtt_reason"] = f"broker {where} non utilizzabile: {exc}"
+        log.warning("Pubblicazione MQTT non riuscita (%s): %s", where, exc)
         return False
 
 
@@ -161,7 +211,7 @@ def _rest_entity_id(entity: dict) -> str:
     return f"{entity['domain']}.sentinella_{entity['id']}"
 
 
-def _rest_publish(entity: dict) -> None:
+def _rest_publish(entity: dict) -> bool:
     state = entity["state"]
     if entity["domain"] == "binary_sensor":
         state = "on" if state else "off"
@@ -174,32 +224,53 @@ def _rest_publish(entity: dict) -> None:
                      ("state_class", "state_class")):
         if entity.get(src):
             attrs[dst] = entity[src]
-    _request(f"{API}/states/{_rest_entity_id(entity)}", {"state": state, "attributes": attrs})
+    return _request(f"{API}/states/{_rest_entity_id(entity)}", {"state": state, "attributes": attrs}) is not None
 
 
 # ---------------------------------------------------------------- interfaccia usata dal motore
 
 def channel() -> str:
-    if not os.environ.get("SUPERVISOR_TOKEN"):
+    if _manual:
+        return "mqtt"
+    if not _token():
         return "nessuno"
     return "mqtt" if mqtt_settings() else "api"
 
 
+def _report(channel_name: str, detail: str, count: int, error: str | None) -> None:
+    changed = (status["channel"], status["error"]) != (channel_name, error)
+    status.update(channel=channel_name, detail=detail, entities=count, error=error)
+    if not error:
+        status["last_ok"] = int(time.time())
+    if changed:
+        (log.warning if error else log.info)(
+            "Sensori verso Home Assistant: canale %s, %s, %d entità%s",
+            channel_name, detail, count, f" - ERRORE: {error}" if error else "")
+
+
 def publish(entities: list[dict]) -> None:
-    if not os.environ.get("SUPERVISOR_TOKEN"):
-        return
+    has_token = bool(_token())
+    if not has_token and not _manual:
+        return _report("nessuno", "token del Supervisor non trovato", 0,
+                       "l'add-on non riesce a leggere SUPERVISOR_TOKEN: nessun sensore viene pubblicato")
     settings = mqtt_settings()
     if settings:
         messages = [m for e in entities for m in _mqtt_messages(e)]
         if mqtt_publish(settings, messages):
-            return
-    for entity in entities:
-        _rest_publish(entity)
+            status["mqtt_reason"] = None
+            where = f"{settings['host']}:{settings.get('port') or 1883}"
+            origin = "indicato nelle opzioni" if _manual else "fornito dal Supervisor"
+            return _report("mqtt", f"broker {where} ({origin})", len(entities), None)
+    if not has_token:
+        return _report("nessuno", "broker MQTT non raggiungibile", 0, status["mqtt_reason"])
+    sent = sum(1 for entity in entities if _rest_publish(entity))
+    _report("api", "API di Home Assistant (nessun broker MQTT utilizzabile)", sent,
+            None if sent == len(entities) else f"Home Assistant ha accettato {sent} entità su {len(entities)}")
 
 
 def remove(domain: str, entity_id: str) -> None:
     """Elimina un'entità (dispositivo dimenticato dall'utente)."""
-    if not os.environ.get("SUPERVISOR_TOKEN"):
+    if not _token():
         return
     settings = mqtt_settings()
     if settings:
