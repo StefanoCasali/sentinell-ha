@@ -178,6 +178,8 @@ def _mqtt_device(entity: dict) -> dict:
     info = {"identifiers": [f"sentinella_{entity['id']}"], "name": dev["name"], "via_device": "sentinella"}
     if dev.get("vendor"):
         info["manufacturer"] = dev["vendor"]
+    if dev.get("model"):
+        info["model"] = dev["model"]
     if dev.get("mac"):
         # Con il MAC Home Assistant unisce il sensore al dispositivo già noto da altre integrazioni.
         info["connections"] = [["mac", dev["mac"]]]

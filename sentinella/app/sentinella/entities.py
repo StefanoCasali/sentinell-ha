@@ -13,7 +13,23 @@ def iso(ts) -> str | None:
 
 
 def label(dev: dict) -> str:
-    return dev.get("name") or dev.get("hostname") or dev.get("vendor") or dev.get("ip") or "?"
+    info = dev.get("info") or {}
+    return (dev.get("name") or info.get("friendly_name") or dev.get("hostname") or info.get("model")
+            or dev.get("vendor") or dev.get("ip") or "?")
+
+
+def ha_summary(dev: dict) -> dict:
+    """Riferimenti a ciò che Home Assistant conosce già di questo dispositivo."""
+    link = dev.get("ha") or {}
+    devices = link.get("devices", [])
+    return {
+        "collegato_a_home_assistant": bool(link.get("linked")),
+        "dispositivi_ha": [{"nome": d["name"], "id": d["id"], "integrazioni": d["integrations"],
+                            "area": d["area"], "trovato_per": d["match"]} for d in devices],
+        "integrazioni_ha": sorted({i for d in devices for i in d["integrations"]}),
+        "entita_ha": [e for d in devices for e in d["entities"]][:15]
+                     + [e["entity_id"] for e in link.get("entities", [])],
+    }
 
 
 def slug(key: str) -> str:
@@ -46,7 +62,8 @@ def score(data: dict) -> int:
 
 
 def _dev_item(dev: dict) -> dict:
-    return {"nome": label(dev), "ip": dev.get("ip"), "mac": dev.get("mac"), "produttore": dev.get("vendor")}
+    return {"nome": label(dev), "ip": dev.get("ip"), "mac": dev.get("mac"), "produttore": dev.get("vendor"),
+            "tipo": (dev.get("info") or {}).get("type_label")}
 
 
 def _sensor(eid, name, state, icon, attrs=None, **extra):
@@ -64,6 +81,11 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
     online = [d for d in devices if d.get("online")]
     untrusted = [d for d in online if not d.get("trusted")]
     review = [d for d in devices if d.get("needs_review")]
+    linked = [d for d in online if (d.get("ha") or {}).get("linked")]
+    by_type: dict[str, int] = {}
+    for d in online:
+        kind = (d.get("info") or {}).get("type_label") or "Non identificato"
+        by_type[kind] = by_type.get(kind, 0) + 1
     by_key = data["devices"]
     c = counts(data)
     open_findings = sorted((f for f in data["findings"].values() if f["status"] == "open"),
@@ -91,7 +113,13 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
     out = [
         # --- dispositivi
         _sensor("dispositivi_online", "Dispositivi in rete", len(online), "mdi:lan-connect",
-                {"dispositivi": [_dev_item(d) for d in online[:MAX_ITEMS]]}, unit="dispositivi", **measurement),
+                {"dispositivi": [_dev_item(d) for d in online[:MAX_ITEMS]], "per_tipo": by_type},
+                unit="dispositivi", **measurement),
+        _sensor("dispositivi_domotica", "Dispositivi collegati alla domotica", len(linked), "mdi:home-automation",
+                {"dispositivi": [{**_dev_item(d), "integrazioni": ha_summary(d)["integrazioni_ha"]}
+                                 for d in linked[:MAX_ITEMS]],
+                 "non_collegati": [_dev_item(d) for d in online if not (d.get("ha") or {}).get("linked")][:MAX_ITEMS]},
+                unit="dispositivi", **measurement),
         _sensor("dispositivi_noti", "Dispositivi conosciuti", len(devices), "mdi:lan", unit="dispositivi", **measurement),
         _sensor("dispositivi_non_fidati", "Dispositivi non fidati", len(untrusted), "mdi:help-network",
                 {"dispositivi": [_dev_item(d) for d in untrusted[:MAX_ITEMS]]}, unit="dispositivi", **measurement),
@@ -153,14 +181,24 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
             if f.get("device_key"):
                 open_by_device[f["device_key"]] = open_by_device.get(f["device_key"], 0) + 1
         for dev in devices:
+            info = dev.get("info") or {}
             out.append(_binary(
                 device_entity_id(dev["key"]), "In rete", dev.get("online"),
-                {"ip": dev.get("ip"), "mac": dev.get("mac"), "produttore": dev.get("vendor"),
-                 "hostname": dev.get("hostname"), "fidato": bool(dev.get("trusted")),
-                 "router": bool(dev.get("is_gateway")),
-                 "porte_aperte": [f"{p['port']} {p['service']}" for p in dev.get("ports", [])],
+                # "sorgente" serve a riconoscere le proprie entità quando si rilegge il registro di Home Assistant.
+                {"sorgente": "sentinella", "ip": dev.get("ip"), "mac": dev.get("mac"),
+                 "mac_privato": bool(info.get("private_mac")),
+                 "produttore": info.get("manufacturer") or dev.get("vendor"),
+                 "hostname": dev.get("hostname"), "tipo": info.get("type_label"),
+                 "modello": info.get("model"), "nome_rilevato": info.get("friendly_name"),
+                 "sistema_operativo": info.get("os"), "firmware": info.get("firmware"),
+                 "nome_netbios": info.get("netbios"), "servizi_annunciati": info.get("services", []),
+                 "fidato": bool(dev.get("trusted")), "router": bool(dev.get("is_gateway")),
+                 "porte_aperte": [" ".join(filter(None, [str(p["port"]), p["service"], p.get("info", {}).get("product")]))
+                                  for p in dev.get("ports", [])],
                  "problemi_aperti": open_by_device.get(dev["key"], 0),
+                 **ha_summary(dev),
                  "prima_volta": iso(dev.get("first_seen")), "ultima_volta": iso(dev.get("last_seen"))},
                 device_class="connectivity",
-                device={"key": dev["key"], "name": label(dev), "mac": dev.get("mac"), "vendor": dev.get("vendor")}))
+                device={"key": dev["key"], "name": label(dev), "mac": dev.get("mac"),
+                        "vendor": info.get("manufacturer") or dev.get("vendor"), "model": info.get("model")}))
     return out

@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import discovery, entities, ha, netinfo, portscan, probes, rules, upnp
+from . import discovery, enrich, entities, ha, halink, netinfo, portscan, probes, rules, upnp
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,18 @@ class Engine:
         for (ip, port), info in zip(pairs, infos):
             details[ip].append({"port": port, "service": portscan.PORTS.get(port, "?"), "info": info})
 
+        self.status["phase"] = "Identificazione dei dispositivi"
+        raw = enrich.collect(list(hosts))
+        deep = {}
+        if self.options.get("deep_scan"):
+            self.status["phase"] = "Scansione approfondita"
+            deep = enrich.deep_scan(open_ports)
+            for ip, found_deep in deep.items():
+                for entry in details.get(ip, []):
+                    if entry["port"] in found_deep.get("ports", {}):
+                        entry["info"]["product"] = found_deep["ports"][entry["port"]]
+        registry = halink.fetch() if self.options.get("ha_links", True) else None
+
         self.status["phase"] = "Controllo del router"
         router = upnp.snapshot()
         gateway = netinfo.gateway() or (router.get("igd") or {}).get("host")
@@ -118,6 +130,14 @@ class Engine:
                     ports=sorted(details.get(ip, []), key=lambda e: e["port"]),
                     is_gateway=ip == gateway, is_self=ip == my_ip,
                 )
+                info = enrich.describe(dev, raw.get(ip, {}), deep.get(ip))
+                # Senza scansione approfondita si conserva il sistema operativo rilevato in passato.
+                for kept in ("os", "os_accuracy"):
+                    if kept not in info and (dev.get("info") or {}).get(kept):
+                        info[kept] = dev["info"][kept]
+                dev["info"] = info
+                if registry is not None:
+                    dev["ha"] = halink.match(dev, registry)
             online = [d for d in devices.values() if d["online"]]
             by_ip = {d["ip"]: d for d in online}
 
@@ -409,7 +429,8 @@ class Engine:
                              key=lambda d: (not d["online"], ipaddress.ip_address(d["ip"])))
             return {
                 "status": dict(self.status),
-                "ha": dict(ha.status),
+                "ha": {**ha.status, "links": dict(halink.status)},
+                "types": enrich.TYPES,
                 "counts": entities.counts(data),
                 "score": entities.score(data),
                 "findings": findings,

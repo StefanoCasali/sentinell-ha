@@ -158,6 +158,14 @@ def device_findings(device: dict, is_new: bool) -> list[dict]:
 
     for entry in device.get("ports", []):
         port, info = entry["port"], entry.get("info", {})
+        if info.get("cert_expired"):
+            out.append(_finding(
+                f"cert-expired:{key}:{port}", "low", "Certificato HTTPS scaduto",
+                f"Il certificato presentato sulla porta {port} è scaduto: il browser non può più garantire "
+                "che tu stia parlando con il dispositivo giusto.",
+                ["Rigenera il certificato dal pannello del dispositivo o aggiorna il firmware.",
+                 "Se il dispositivo non lo permette, raggiungilo solo dalla rete di casa."],
+                device, port))
         rule = PORT_RULES.get(port)
         if rule:
             severity, title, detail, steps = rule

@@ -6,7 +6,10 @@ aperta" da "il servizio accetta chiunque".
 """
 
 import http.client
+import os
 import re
+import tempfile
+import time
 import socket
 import ssl
 import struct
@@ -30,13 +33,24 @@ def _recv(sock: socket.socket, size: int) -> bytes:
         return b""
 
 
+def _lenient_context() -> ssl.SSLContext:
+    """Contesto TLS permissivo: i dispositivi vecchi usano protocolli e cifrari che Python rifiuterebbe."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+        ctx.set_ciphers("ALL:@SECLEVEL=0")
+    except (ssl.SSLError, ValueError):
+        pass
+    return ctx
+
+
 def http_info(ip: str, port: int) -> dict:
     tls = port in HTTPS_PORTS
     try:
         if tls:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            ctx = _lenient_context()
             conn = http.client.HTTPSConnection(ip, port, timeout=TIMEOUT, context=ctx)
         else:
             conn = http.client.HTTPConnection(ip, port, timeout=TIMEOUT)
@@ -57,6 +71,45 @@ def http_info(ip: str, port: int) -> dict:
         info["title"] = _text(title.group(1), 80)
     if port == 9200 and resp.status == 200 and b"cluster_name" in body:
         info["open_elasticsearch"] = True
+    return info
+
+
+def tls_cert(ip: str, port: int) -> dict:
+    """Intestatario, emittente e scadenza del certificato presentato (non viene verificato)."""
+    path = None
+    try:
+        ctx = _lenient_context()
+        with socket.create_connection((ip, port), TIMEOUT) as raw:
+            with ctx.wrap_socket(raw) as tls:
+                der = tls.getpeercert(True)
+        if not der:
+            return {}
+        # Con la verifica disattivata ssl non decodifica il certificato: lo si rilegge da file.
+        with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as handle:
+            handle.write(ssl.DER_cert_to_PEM_cert(der))
+            path = handle.name
+        cert = ssl._ssl._test_decode_cert(path)
+    except Exception:
+        return {}
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def name(field):
+        parts = {k: v for group in cert.get(field, ()) for k, v in group}
+        return _text((parts.get("commonName") or parts.get("organizationName") or "").encode("utf-8", "replace"), 80)
+
+    info = {"cert_subject": name("subject"), "cert_issuer": name("issuer"),
+            "cert_self_signed": cert.get("subject") == cert.get("issuer")}
+    try:
+        expires = ssl.cert_time_to_seconds(cert["notAfter"])
+        info["cert_expires"] = int(expires)
+        info["cert_expired"] = expires < time.time()
+    except (KeyError, ValueError):
+        pass
     return info
 
 
@@ -190,6 +243,8 @@ def probe(ip: str, port: int, active: bool = True) -> dict:
     try:
         if port in HTTP_PORTS or port in HTTPS_PORTS:
             info.update(http_info(ip, port))
+            if info.get("tls"):
+                info.update(tls_cert(ip, port))
         if port in BANNER_PORTS:
             info.update(banner(ip, port))
         if active and port in SPECIFIC:

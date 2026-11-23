@@ -9,6 +9,34 @@ Controlla la rete di casa dall'interno e ti dice cosa sistemare.
 - **Router**: UPnP attivo, porte aperte verso Internet via UPnP, indirizzo pubblico (o CGNAT), servizi di amministrazione esposti sulla LAN.
 - **Verifiche manuali**: una lista di impostazioni del router che nessuna scansione può leggere (WPS, password di amministrazione, port forwarding manuali, DMZ, rete ospiti).
 
+## Cosa sa di ogni dispositivo
+
+Oltre a IP, MAC e produttore, la scheda **Dispositivi** mostra ciò che il dispositivo annuncia da solo in rete:
+
+| Fonte | Cosa fornisce |
+|---|---|
+| mDNS/Bonjour | Nome "umano", modello, firmware e servizi offerti (Chromecast, AirPlay, stampanti, HomeKit, ESPHome, Shelly...) |
+| SSDP/UPnP | Produttore, modello e tipo di TV, console, NAS, media player |
+| NetBIOS | Nome del computer e gruppo di lavoro |
+| Certificato HTTPS | Intestatario, se è autofirmato, scadenza (un certificato scaduto è segnalato come falla bassa) |
+| MAC | Se è casuale ("privato"), tipico di telefoni e tablet |
+
+Da questi dati viene dedotto il **tipo** (router, computer, telefono, TV, audio, stampante, telecamera, NAS, dispositivo smart, hub, console, server): è una stima, serve a filtrare l'elenco e può sbagliare.
+
+Con l'opzione `deep_scan` si aggiunge una scansione nmap delle porte aperte che rileva software e versione dei servizi e stima il sistema operativo. Allunga la scansione di alcuni minuti ed è più visibile ai dispositivi, per questo è spenta di default. Le versioni vengono mostrate, non confrontate con un elenco di vulnerabilità note.
+
+## Collegamento con la domotica
+
+Per ogni dispositivo di rete Sentinella cerca in Home Assistant chi lo conosce già e lo riporta nella scheda, con il collegamento alla pagina del dispositivo, le integrazioni, l'area e le entità. La corrispondenza si cerca per:
+
+- **MAC** nelle connessioni o negli identificativi del dispositivo di Home Assistant;
+- **indirizzo di configurazione** del dispositivo (il link "Visita" che punta al suo IP);
+- **IP o MAC nelle entità**: attributi `ip`, `ip_address`, `host`, `mac`, `mac_address`, oppure sensori il cui stato è l'indirizzo IP (tipico di ESPHome, Shelly, WLED, dei device tracker).
+
+Un dispositivo "non collegato" è semplicemente in rete senza che nessuna integrazione lo usi: può essere normale (un telefono, una TV) o un indizio da approfondire. Le integrazioni cloud che non conoscono né IP né MAC (per esempio Tuya) non possono essere riconosciute. Via MQTT, l'integrazione `mqtt` può comparire accanto alle altre perché il sensore "In rete" di Sentinella viene agganciato allo stesso dispositivo.
+
+Il registro viene letto a ogni scansione; l'esito è nella scheda **Stato e cronologia**. Si disattiva con l'opzione `ha_links`.
+
 ## Falle e incidenti
 
 Una **falla** è uno stato: resta aperta finché la scansione la trova (o finché la ignori). Un **incidente** è un cambiamento sospetto tra due scansioni e resta "da verificare" finché non premi **Ho verificato**:
@@ -40,6 +68,7 @@ Senza broker le stesse entità vengono scritte tramite l'API di Home Assistant: 
 |---|---|
 | `sensor.sentinella_dispositivi_in_rete` | Dispositivi accesi; elenco negli attributi |
 | `sensor.sentinella_dispositivi_conosciuti` | Dispositivi visti almeno una volta |
+| `sensor.sentinella_dispositivi_collegati_alla_domotica` | Dispositivi in rete già noti a un'integrazione; elenco dei non collegati negli attributi |
 | `sensor.sentinella_dispositivi_non_fidati` | Accesi e non ancora classificati; elenco negli attributi |
 | `binary_sensor.sentinella_nuovo_dispositivo_rilevato` | Acceso finché c'è un dispositivo nuovo da classificare |
 | `sensor.sentinella_ultimo_dispositivo_comparso` | Nome, IP, MAC e data dell'ultimo arrivato |
@@ -56,7 +85,7 @@ Senza broker le stesse entità vengono scritte tramite l'API di Home Assistant: 
 | `sensor.sentinella_indirizzo_ip_pubblico` | Indirizzo WAN dichiarato dal router |
 | `sensor.sentinella_verifiche_manuali_completate` | Voci spuntate della lista del router; mancanti negli attributi |
 | `sensor.sentinella_ultima_scansione`, `_durata_ultima_scansione`, `binary_sensor.sentinella_scansione_in_corso` | Diagnostica |
-| `binary_sensor.<dispositivo>_in_rete` | Uno per dispositivo: acceso o spento, con IP, MAC, porte aperte e falle |
+| `binary_sensor.<dispositivo>_in_rete` | Uno per dispositivo: acceso o spento, con IP, MAC, tipo, modello, sistema operativo, porte aperte, falle e i riferimenti alla domotica (`collegato_a_home_assistant`, `dispositivi_ha`, `integrazioni_ha`, `entita_ha`) |
 
 Con il canale API i nomi sono `sensor.sentinella_<id>` (per esempio `sensor.sentinella_dispositivi_online`, `binary_sensor.sentinella_falle`, `binary_sensor.sentinella_dispositivo_<mac>`).
 
@@ -94,6 +123,8 @@ automation:
 | `active_probes` | attivo | Verifica se i servizi accettano accessi senza password |
 | `notify` | attivo | Notifica in Home Assistant a ogni incidente |
 | `device_entities` | attivo | Crea un sensore "In rete" per ogni dispositivo |
+| `ha_links` | attivo | Cerca in Home Assistant i dispositivi e le entità già collegati |
+| `deep_scan` | spento | Versioni dei servizi e sistema operativo con nmap (più lenta) |
 | `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | vuoto | Solo per un broker diverso dall'add-on Mosquitto |
 
 Scrivi le reti con la maschera (`192.168.1.0/24`); senza maschera viene assunto `/24`.

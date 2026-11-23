@@ -6,7 +6,7 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("SENTINELLA_DATA", "/data"))
 DEV = os.environ.get("SENTINELLA_DEV") == "1"
-PORT = int(os.environ.get("SENTINELLA_PORT", "8099"))
+PORT = int(os.environ.get("SENTINELLA_PORT") or (DEV and os.environ.get("PORT")) or 8099)
 
 # Il proxy ingress di Home Assistant raggiunge l'add-on sempre da questo indirizzo.
 INGRESS_PROXY = "172.30.32.2"
@@ -18,6 +18,8 @@ DEFAULTS = {
     "active_probes": True,
     "notify": True,
     "device_entities": True,
+    "ha_links": True,
+    "deep_scan": False,
 }
 
 

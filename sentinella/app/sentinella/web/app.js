@@ -70,7 +70,8 @@ function confirmDialog(title, text) {
 }
 
 function deviceLabel(d) {
-  return d ? (d.name || d.hostname || d.vendor || d.ip) : "";
+  const info = (d && d.info) || {};
+  return d ? (d.name || info.friendly_name || d.hostname || info.model || d.vendor || d.ip) : "";
 }
 
 // ---------------------------------------------------------------- riepilogo
@@ -200,15 +201,34 @@ function deviceCard(d) {
     d.trusted ? h("span", { class: "badge okc" }, "Fidato") : h("span", { class: "badge medium" }, "Da classificare"),
   ];
   const problems = state.findings.filter((f) => f.device_key === d.key && f.status === "open").length;
+  const info = d.info || {};
+  if (info.type_label && !d.is_gateway) tags.unshift(h("span", { class: "badge low" }, info.type_label));
+  const facts = [
+    ["Modello", [info.manufacturer, info.model].filter(Boolean).join(" ")],
+    ["Nome annunciato", info.friendly_name],
+    ["Sistema operativo", info.os ? `${info.os} (stima ${info.os_accuracy || "?"}%)` : ""],
+    ["Firmware", info.firmware],
+    ["Nome Windows", [info.netbios, info.workgroup].filter(Boolean).join(" - gruppo ")],
+    ["Servizi annunciati", (info.services || []).join(", ")],
+    ["MAC", info.private_mac ? "casuale (privato): può cambiare e far ricomparire il dispositivo come nuovo" : ""],
+    ["Fonti", (info.sources || []).join(", ")],
+  ].filter(([, v]) => v);
   return h("div", { class: "card" },
     h("div", { class: "row" },
       h("h3", { class: "grow" }, deviceLabel(d)), tags),
     h("div", { class: "muted" },
       [d.ip, d.mac, d.vendor, d.hostname].filter(Boolean).join(" - ") +
       ` - visto la prima volta il ${fmt(d.first_seen)}` + (problems ? ` - ${problems} problemi aperti` : "")),
+    facts.length ? h("div", { class: "facts" }, facts.map(([k, v]) =>
+      h("div", {}, h("span", { class: "muted" }, k + ": "), v))) : null,
+    haLinks(d),
     d.ports && d.ports.length ? h("div", { class: "ports" }, d.ports.map((p) => {
-      const extra = p.info.title || p.info.server || p.info.banner || "";
-      return h("span", { class: "port", title: extra }, `${p.port} ${p.service}`);
+      const cert = p.info.cert_subject
+        ? ` | certificato: ${p.info.cert_subject}${p.info.cert_self_signed ? " (autofirmato)" : ""}` +
+          (p.info.cert_expires ? `, scade il ${fmt(p.info.cert_expires)}` : "") : "";
+      const extra = [p.info.product, p.info.title || p.info.server || p.info.banner].filter(Boolean).join(" | ") + cert;
+      return h("span", { class: "port" + (p.info.cert_expired ? " expired" : ""), title: extra },
+        `${p.port} ${p.service}${p.info.product ? " · " + p.info.product : ""}`);
     })) : h("div", { class: "muted" }, "Nessuna porta aperta tra quelle controllate."),
     h("div", { class: "actions" },
       nameInput,
@@ -221,9 +241,57 @@ function deviceCard(d) {
       } }, "Dimentica")));
 }
 
+function haLinks(d) {
+  const link = d.ha;
+  if (!link) return null;
+  if (!link.linked) {
+    return h("div", { class: "halink muted" }, "Domotica: non collegato a nessuna integrazione di Home Assistant.");
+  }
+  const rows = link.devices.map((x) => h("div", {},
+    h("b", {}, "In Home Assistant: "),
+    // Il pannello è in un iframe: il collegamento apre la pagina del dispositivo nella finestra principale.
+    h("a", { href: "/config/devices/device/" + encodeURIComponent(x.id), target: "_top" }, x.name || x.id),
+    [x.manufacturer, x.model].filter(Boolean).length ? ` (${[x.manufacturer, x.model].filter(Boolean).join(" ")})` : "",
+    x.integrations.length ? ` - integrazioni: ${x.integrations.join(", ")}` : "",
+    x.area ? ` - area: ${x.area}` : "",
+    h("span", { class: "muted" }, ` - riconosciuto per ${x.match.join(", ")}`),
+    x.entity_count ? h("details", {},
+      h("summary", {}, `${x.entity_count} entità`),
+      h("div", { class: "ports" }, x.entities.map((e) => h("span", { class: "port" }, e)),
+        x.entity_count > x.entities.length ? h("span", { class: "muted" }, "...") : null)) : null));
+  if (link.entities.length) {
+    rows.push(h("div", {}, h("b", {}, "Entità che lo citano: "),
+      h("span", { class: "ports" }, link.entities.map((e) =>
+        h("span", { class: "port", title: `${e.name} - ${e.match}` }, e.entity_id)))));
+  }
+  return h("div", { class: "halink" }, rows);
+}
+
+let typeFilter = "";
+let haFilter = "";
+
 function renderDevices() {
   if (!state.devices.length) return [h("div", { class: "card empty" }, "Nessun dispositivo: avvia una scansione.")];
-  return state.devices.map(deviceCard);
+  const typeOf = (d) => (d.info && d.info.type) || "sconosciuto";
+  const present = [...new Set(state.devices.map(typeOf))].sort();
+  const select = (value, options, onchange, label) => {
+    const el = h("select", { "aria-label": label, onchange: (e) => { onchange(e.target.value); render(); } },
+      options.map(([v, text]) => h("option", { value: v }, text)));
+    el.value = value;
+    return el;
+  };
+  const shown = state.devices.filter((d) =>
+    (!typeFilter || typeOf(d) === typeFilter) &&
+    (!haFilter || (haFilter === "si") === !!(d.ha && d.ha.linked)));
+  return [
+    h("div", { class: "filter" },
+      select(typeFilter, [["", "Tutti i tipi"], ...present.map((t) => [t, (state.types || {})[t] || t])],
+        (v) => { typeFilter = v; }, "Filtra per tipo"),
+      select(haFilter, [["", "Domotica: tutti"], ["si", "Collegati a Home Assistant"], ["no", "Non collegati"]],
+        (v) => { haFilter = v; }, "Filtra per collegamento alla domotica"),
+      h("span", {}, `${shown.length} di ${state.devices.length} dispositivi`)),
+    ...shown.map(deviceCard),
+  ];
 }
 
 // ---------------------------------------------------------------- router
@@ -287,6 +355,9 @@ function haCard() {
   ];
   if (ha.error) facts.push(["Errore", ha.error]);
   if (ha.channel !== "mqtt" && ha.mqtt_reason) facts.push(["Perché non MQTT", ha.mqtt_reason]);
+  const links = ha.links || {};
+  facts.push(["Registro della domotica", links.ok ? `letto, ${links.devices} dispositivi di Home Assistant`
+    : (links.error || "non ancora letto")]);
   return h("div", { class: "card sev " + (ha.error || ha.channel === "nessuno" ? "high" : "okc") },
     h("h2", {}, "Sensori verso Home Assistant"),
     h("div", { class: "table-wrap" }, h("table", {}, h("tbody", {},
