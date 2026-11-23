@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 from . import netinfo, upnp
+from .i18n import L
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ def mdns(wait: float = 2.5) -> dict[str, dict]:
             sock.sendto(_mdns_query([t + ".local" for t in wanted[start:start + 15]]), MDNS_ADDR)
         collect(wait)
     except OSError as exc:
-        log.info("mDNS non disponibile: %s", exc)
+        log.info("mDNS not available: %s", exc)
     finally:
         sock.close()
     return digest_mdns(packets)[0]
@@ -302,13 +303,13 @@ def _deep_one(item) -> tuple[str, dict]:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stdout
         return ip, parse_nmap_deep(out)
     except (OSError, ET.ParseError, ValueError, subprocess.SubprocessError) as exc:
-        log.info("Scansione approfondita di %s non riuscita: %s", ip, exc)
+        log.info("Deep scan of %s failed: %s", ip, exc)
         return ip, {}
 
 
 def deep_scan(open_ports: dict[str, list[int]]) -> dict[str, dict]:
     if not shutil.which("nmap"):
-        log.warning("Scansione approfondita richiesta ma nmap non è disponibile")
+        log.warning("Deep scan requested but nmap is not available")
         return {}
     targets = [(ip, ports) for ip, ports in open_ports.items() if ports]
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -326,7 +327,7 @@ def collect(ips: list[str]) -> dict[str, dict]:
             try:
                 results[name] = job.result()
             except Exception:  # una fonte che fallisce non deve togliere le altre
-                log.exception("Fonte %s non riuscita", name)
+                log.exception("Source %s failed", name)
                 results[name] = {}
     wanted = set(ips)
     out: dict[str, dict] = {}
@@ -334,7 +335,7 @@ def collect(ips: list[str]) -> dict[str, dict]:
         for ip, info in per_ip.items():
             if ip in wanted:
                 out.setdefault(ip, {})[name] = info
-    log.info("Identificazione: mDNS %d, SSDP %d, NetBIOS %d dispositivi",
+    log.info("Identification: mDNS %d, SSDP %d, NetBIOS %d devices",
              *(len(results[n]) for n in ("mdns", "ssdp", "netbios")))
     return out
 
@@ -345,10 +346,13 @@ def is_private_mac(mac: str | None) -> bool:
 
 
 TYPES = {
-    "router": "Router", "computer": "Computer", "telefono": "Telefono o tablet", "tv": "TV o streaming",
-    "audio": "Audio", "stampante": "Stampante", "telecamera": "Telecamera o DVR", "nas": "NAS",
-    "iot": "Dispositivo smart", "hub": "Hub domotico", "console": "Console", "server": "Server",
-    "sconosciuto": "Non identificato",
+    "router": L("Router", "Router"), "computer": L("Computer", "Computer"),
+    "telefono": L("Telefono o tablet", "Phone or tablet"), "tv": L("TV o streaming", "TV or streaming"),
+    "audio": L("Audio", "Audio"), "stampante": L("Stampante", "Printer"),
+    "telecamera": L("Telecamera o DVR", "Camera or DVR"), "nas": L("NAS", "NAS"),
+    "iot": L("Dispositivo smart", "Smart device"), "hub": L("Hub domotico", "Smart home hub"),
+    "console": L("Console", "Game console"), "server": L("Server", "Server"),
+    "sconosciuto": L("Non identificato", "Unidentified"),
 }
 IOT_VENDORS = ("espressif", "shelly", "allterco", "tuya", "sonoff", "itead", "xiaomi", "tp-link", "meross",
                "broadlink", "philips lighting", "signify", "ikea", "switchbot", "nanoleaf", "aqara", "lumi")
@@ -416,7 +420,7 @@ def describe(dev: dict, raw: dict, deep: dict | None = None) -> dict:
     kind = classify(dev, raw)
     sources = [label for label, data in (("mDNS", m), ("SSDP", s), ("NetBIOS", n), ("nmap", deep)) if data]
     info = {
-        "type": kind, "type_label": TYPES[kind],
+        "type": kind, "type_label": str(TYPES[kind]),
         "friendly_name": _clean(friendly) or None, "model": _clean(model) or None,
         "manufacturer": _clean(s.get("manufacturer")) or None,
         "netbios": n.get("netbios"), "workgroup": n.get("workgroup"),

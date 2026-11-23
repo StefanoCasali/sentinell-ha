@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,20 +10,21 @@
 <header>
   <div class="brand">
     <h1>Sentinella</h1>
-    <p id="subtitle">Controllo di sicurezza della rete di casa</p>
+    <p id="subtitle"></p>
   </div>
-  <button id="scan" class="primary">Avvia scansione</button>
+  <button id="scan" class="primary">Start scan</button>
 </header>
 
 <section id="summary" class="summary" aria-live="polite"></section>
 <div id="banner" class="banner" hidden></div>
 
+<!-- I testi di schede e pulsanti vengono impostati da app.js nella lingua corrente. -->
 <nav class="tabs" role="tablist">
-  <button role="tab" data-tab="findings" aria-selected="true">Problemi</button>
-  <button role="tab" data-tab="incidents">Incidenti</button>
-  <button role="tab" data-tab="devices">Dispositivi</button>
+  <button role="tab" data-tab="findings" aria-selected="true">Findings</button>
+  <button role="tab" data-tab="incidents">Incidents</button>
+  <button role="tab" data-tab="devices">Devices</button>
   <button role="tab" data-tab="router">Router</button>
-  <button role="tab" data-tab="history">Stato e cronologia</button>
+  <button role="tab" data-tab="history">Status and history</button>
 </nav>
 
 <main id="view"></main>
@@ -32,8 +33,8 @@
   <h2 id="confirm-title"></h2>
   <p id="confirm-text"></p>
   <div class="dialog-actions">
-    <button id="confirm-no">Annulla</button>
-    <button id="confirm-yes" class="danger">Conferma</button>
+    <button id="confirm-no">Cancel</button>
+    <button id="confirm-yes" class="danger">Confirm</button>
   </div>
 </dialog>
 

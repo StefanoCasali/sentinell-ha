@@ -12,6 +12,7 @@ import re
 from urllib.parse import urlparse
 
 from . import ha
+from .i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ TEMPLATE = r"""
 {%- for did in states | map(attribute='entity_id') | map('device_id') | reject('none') | unique -%}
   {%- set d = namespace(ents=[], doms=[]) -%}
   {%- for eid in device_entities(did) -%}
-    {%- if state_attr(eid, 'sorgente') != 'sentinella' -%}{%- set d.ents = d.ents + [eid] -%}{%- endif -%}
+    {%- if state_attr(eid, 'managed_by') != 'sentinella' -%}{%- set d.ents = d.ents + [eid] -%}{%- endif -%}
   {%- endfor -%}
   __INTEGRATIONS__
   {%- set ns.devs = ns.devs + [{
@@ -46,7 +47,7 @@ TEMPLATE = r"""
   {%- set mac = a.get('mac') or a.get('mac_address') -%}
   {%- set ip = a.get('ip') or a.get('ip_address') or a.get('host') -%}
   {%- set st = s.state if s.state is match('__IP_RE__') else '' -%}
-  {%- if (mac or ip or st) and a.get('sorgente') != 'sentinella' -%}
+  {%- if (mac or ip or st) and a.get('managed_by') != 'sentinella' -%}
     {%- set ns.ents = ns.ents + [{
       'entity_id': s.entity_id, 'name': s.name | string, 'mac': (mac or '') | string,
       'ip': (ip or '') | string, 'state_ip': st, 'device': (device_id(s.entity_id) or '') | string
@@ -66,15 +67,16 @@ status = {"ok": None, "devices": 0, "error": None}
 def fetch() -> dict | None:
     """Registro di Home Assistant in forma compatta; None se non è leggibile."""
     if not ha._token():
-        status.update(ok=None, error="fuori da Home Assistant")
+        status.update(ok=None, error=t("fuori da Home Assistant", "not running inside Home Assistant"))
         return None
     for integrations in (INTEGRATIONS, ""):
         reply = ha._request(f"{ha.API}/template", {"template": TEMPLATE.replace("__INTEGRATIONS__", integrations)})
         if isinstance(reply, dict) and "devs" in reply:
             status.update(ok=True, devices=len(reply["devs"]), error=None)
             return reply
-    status.update(ok=False, error="Home Assistant non ha restituito il registro dei dispositivi (vedi il log)")
-    log.warning("Registro dei dispositivi di Home Assistant non leggibile: collegamenti non aggiornati")
+    status.update(ok=False, error=t("Home Assistant non ha restituito il registro dei dispositivi (vedi il log)",
+                                   "Home Assistant did not return the device registry (see the log)"))
+    log.warning("Home Assistant device registry not readable: links not updated")
     return None
 
 
@@ -110,16 +112,16 @@ def match(dev: dict, registry: dict) -> dict:
             if any(mac in _hex(i[-1]) for i in device.get("identifiers", []) if i and len(_hex(i[-1])) >= 12):
                 reasons.add("MAC")
         if ip and _url_host(device.get("url") or "") == ip:
-            reasons.add("indirizzo di configurazione")
+            reasons.add(t("indirizzo di configurazione", "configuration URL"))
         if reasons:
             hits.setdefault(device["id"], set()).update(reasons)
 
     for entity in registry.get("ents", []):
         reason = None
         if mac and len(mac) == 12 and _hex(entity.get("mac")) == mac:
-            reason = "MAC nell'entità"
+            reason = t("MAC nell'entità", "MAC in the entity")
         elif ip and ip in (entity.get("ip"), entity.get("state_ip")):
-            reason = "IP nell'entità"
+            reason = t("IP nell'entità", "IP in the entity")
         if not reason:
             continue
         if entity.get("device") in by_id:

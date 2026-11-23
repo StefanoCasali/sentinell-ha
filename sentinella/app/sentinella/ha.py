@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 from . import __version__
+from .i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ DISCOVERY_PREFIX = "homeassistant"
 STATE_PREFIX = "sentinella"
 MAIN_DEVICE = {
     "identifiers": ["sentinella"], "name": "Sentinella", "manufacturer": "Sentinella",
-    "model": "Controllo di sicurezza della rete", "sw_version": __version__,
+    "model": "Network security monitor", "sw_version": __version__,
 }
 
 _mqtt_cache = {"at": 0.0, "settings": None}
@@ -57,7 +58,7 @@ def _token() -> str | None:
     return value or None
 
 # Esito dell'ultimo invio, mostrato nel pannello per capire dove finiscono i sensori.
-status = {"channel": "nessuno", "detail": "fuori da Home Assistant: nessun sensore pubblicato",
+status = {"channel": "none", "detail": None,
           "entities": 0, "last_ok": None, "error": None, "mqtt_reason": None}
 
 
@@ -86,9 +87,9 @@ def _request(url: str, payload=None, method=None):
         return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
-            log.warning("Home Assistant ha risposto %s a %s", exc.code, url)
+            log.warning("Home Assistant answered %s to %s", exc.code, url)
     except (OSError, ValueError) as exc:
-        log.warning("Home Assistant non raggiungibile (%s): %s", url, exc)
+        log.warning("Home Assistant unreachable (%s): %s", url, exc)
     return None
 
 
@@ -106,9 +107,11 @@ def mqtt_settings() -> dict | None:
         if settings and not settings.get("host"):
             settings = None
         _mqtt_cache.update(at=now, settings=settings)
-        status["mqtt_reason"] = None if settings else (
+        status["mqtt_reason"] = None if settings else t(
             "il Supervisor non mette a disposizione un broker MQTT: l'add-on Mosquitto non è installato o "
-            "non è avviato. Per un broker diverso compila le opzioni mqtt_host, mqtt_username e mqtt_password")
+            "non è avviato. Per un broker diverso compila le opzioni mqtt_host, mqtt_username e mqtt_password",
+            "the Supervisor does not provide an MQTT broker: the Mosquitto add-on is not installed or not "
+            "running. For a different broker fill in the mqtt_host, mqtt_username and mqtt_password options")
     return _mqtt_cache["settings"]
 
 
@@ -131,7 +134,7 @@ def _recv_exact(sock, size: int) -> bytes:
     while len(data) < size:
         chunk = sock.recv(size - len(data))
         if not chunk:
-            raise OSError("connessione chiusa dal broker")
+            raise OSError(t("connessione chiusa dal broker", "connection closed by the broker"))
         data += chunk
     return data
 
@@ -154,8 +157,10 @@ def mqtt_publish(settings: dict, messages: list[tuple[str, str]]) -> bool:
             sock.sendall(b"\x10" + _varlen(len(body)) + body)
             connack = _recv_exact(sock, 4)
             if connack[0] != 0x20 or connack[3] != 0:
-                reason = {4: "utente o password errati", 5: "utente non autorizzato"}.get(connack[3], f"codice {connack[3]}")
-                raise OSError(f"connessione rifiutata dal broker ({reason})")
+                reason = {4: t("utente o password errati", "wrong username or password"),
+                          5: t("utente non autorizzato", "user not authorised")}.get(
+                              connack[3], t("codice {c}", "code {c}").format(c=connack[3]))
+                raise OSError(t("connessione rifiutata dal broker ({r})", "connection refused by the broker ({r})").format(r=reason))
             for topic, payload in messages:
                 data = _mstr(topic) + payload.encode()
                 sock.sendall(b"\x31" + _varlen(len(data)) + data)  # PUBLISH, QoS 0, retain
@@ -166,8 +171,8 @@ def mqtt_publish(settings: dict, messages: list[tuple[str, str]]) -> bool:
         return True
     except OSError as exc:
         where = f"{settings.get('host')}:{settings.get('port') or 1883}"
-        status["mqtt_reason"] = f"broker {where} non utilizzabile: {exc}"
-        log.warning("Pubblicazione MQTT non riuscita (%s): %s", where, exc)
+        status["mqtt_reason"] = t("broker {w} non utilizzabile: {e}", "broker {w} cannot be used: {e}").format(w=where, e=exc)
+        log.warning("MQTT publish failed (%s): %s", where, exc)
         return False
 
 
@@ -221,7 +226,7 @@ def _rest_publish(entity: dict) -> bool:
         state = "unknown"
     dev = entity.get("device")
     attrs = dict(entity["attributes"])
-    attrs["friendly_name"] = f"{dev['name']} in rete" if dev else f"Sentinella {entity['name']}"
+    attrs["friendly_name"] = f"{dev['name']} {entity['name']}" if dev else f"Sentinella {entity['name']}"
     for src, dst in (("device_class", "device_class"), ("unit", "unit_of_measurement"), ("icon", "icon"),
                      ("state_class", "state_class")):
         if entity.get(src):
@@ -235,7 +240,7 @@ def channel() -> str:
     if _manual:
         return "mqtt"
     if not _token():
-        return "nessuno"
+        return "none"
     return "mqtt" if mqtt_settings() else "api"
 
 
@@ -246,28 +251,30 @@ def _report(channel_name: str, detail: str, count: int, error: str | None) -> No
         status["last_ok"] = int(time.time())
     if changed:
         (log.warning if error else log.info)(
-            "Sensori verso Home Assistant: canale %s, %s, %d entità%s",
-            channel_name, detail, count, f" - ERRORE: {error}" if error else "")
+            "Sensors to Home Assistant: channel %s, %s, %d entities%s",
+            channel_name, detail, count, f" - ERROR: {error}" if error else "")
 
 
 def publish(entities: list[dict]) -> None:
     has_token = bool(_token())
     if not has_token and not _manual:
-        return _report("nessuno", "token del Supervisor non trovato", 0,
-                       "l'add-on non riesce a leggere SUPERVISOR_TOKEN: nessun sensore viene pubblicato")
+        return _report("none", t("token del Supervisor non trovato", "Supervisor token not found"), 0,
+                       t("l'add-on non riesce a leggere SUPERVISOR_TOKEN: nessun sensore viene pubblicato",
+                         "the add-on cannot read SUPERVISOR_TOKEN: no sensor is published"))
     settings = mqtt_settings()
     if settings:
         messages = [m for e in entities for m in _mqtt_messages(e)]
         if mqtt_publish(settings, messages):
             status["mqtt_reason"] = None
             where = f"{settings['host']}:{settings.get('port') or 1883}"
-            origin = "indicato nelle opzioni" if _manual else "fornito dal Supervisor"
+            origin = t("indicato nelle opzioni", "set in the options") if _manual else t("fornito dal Supervisor", "provided by the Supervisor")
             return _report("mqtt", f"broker {where} ({origin})", len(entities), None)
     if not has_token:
-        return _report("nessuno", "broker MQTT non raggiungibile", 0, status["mqtt_reason"])
+        return _report("none", t("broker MQTT non raggiungibile", "MQTT broker unreachable"), 0, status["mqtt_reason"])
     sent = sum(1 for entity in entities if _rest_publish(entity))
-    _report("api", "API di Home Assistant (nessun broker MQTT utilizzabile)", sent,
-            None if sent == len(entities) else f"Home Assistant ha accettato {sent} entità su {len(entities)}")
+    _report("api", t("API di Home Assistant (nessun broker MQTT utilizzabile)", "Home Assistant API (no usable MQTT broker)"), sent,
+            None if sent == len(entities) else t("Home Assistant ha accettato {a} entità su {b}",
+                                                 "Home Assistant accepted {a} entities out of {b}").format(a=sent, b=len(entities)))
 
 
 def remove(domain: str, entity_id: str) -> None:
@@ -283,6 +290,18 @@ def remove(domain: str, entity_id: str) -> None:
     _request(f"{API}/states/{domain}.sentinella_{entity_id}", method="DELETE")
 
 
+_language_cache = {"at": 0.0, "value": None}
+
+
+def language() -> str | None:
+    """Lingua configurata in Home Assistant (None se non è leggibile)."""
+    now = time.time()
+    if now - _language_cache["at"] > 3600 or not _language_cache["value"]:
+        reply = _request(f"{API}/config") if _token() else None
+        _language_cache.update(at=now, value=(reply or {}).get("language") or _language_cache["value"])
+    return _language_cache["value"]
+
+
 def fire_event(event_type: str, data: dict) -> None:
     _request(f"{API}/events/{event_type}", data)
 
@@ -292,9 +311,9 @@ def notify(lines: list[str]) -> None:
         return
     shown = lines[:10]
     if len(lines) > 10:
-        shown.append(f"... e altri {len(lines) - 10}.")
+        shown.append(t("... e altri {n}.", "... and {n} more.").format(n=len(lines) - 10))
     _request(f"{API}/services/persistent_notification/create", {
         "notification_id": "sentinella",
-        "title": "Sentinella: incidenti di sicurezza in rete",
-        "message": "\n".join(f"- {line}" for line in shown) + "\n\nApri il pannello Sentinella per i dettagli.",
+        "title": t("Sentinella: incidenti di sicurezza in rete", "Sentinella: network security incidents"),
+        "message": "\n".join(f"- {line}" for line in shown) + "\n\n" + t("Apri il pannello Sentinella per i dettagli.", "Open the Sentinella panel for details."),
     })

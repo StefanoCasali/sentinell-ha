@@ -1,0 +1,40 @@
+configuration:
+  scan_interval_hours:
+    name: Intervallo tra le scansioni (ore)
+    description: Ore tra una scansione automatica e la successiva.
+  networks:
+    name: Reti da controllare
+    description: Reti in forma CIDR, per esempio 192.168.1.0/24. Lascia vuoto per controllare la rete a cui è collegato Home Assistant.
+  extra_ports:
+    name: Porte aggiuntive
+    description: Altre porte TCP da controllare su ogni dispositivo.
+  active_probes:
+    name: Verifica gli accessi senza password
+    description: Controlla con una sola connessione in sola lettura se i servizi accettano accessi senza password (FTP anonimo, MQTT, Redis, VNC, SMBv1).
+  notify:
+    name: Notifiche
+    description: Crea una notifica in Home Assistant a ogni incidente di sicurezza.
+  device_entities:
+    name: Un sensore per dispositivo
+    description: Crea un sensore binario "In rete" per ogni dispositivo trovato.
+  ha_links:
+    name: Collega i dispositivi alla domotica
+    description: Cerca quali dispositivi ed entità di Home Assistant corrispondono già a ogni dispositivo di rete.
+  deep_scan:
+    name: Scansione approfondita
+    description: Rileva versioni dei servizi e sistema operativo con nmap. Più lenta e più visibile ai dispositivi.
+  language:
+    name: Lingua
+    description: Lingua di pannello, falle, incidenti e nomi delle entità. "auto" segue la lingua di Home Assistant (italiano o inglese).
+  mqtt_host:
+    name: Host del broker MQTT
+    description: Solo per un broker diverso dall'add-on Mosquitto. Lascia vuoto per usare quello fornito dal Supervisor.
+  mqtt_port:
+    name: Porta del broker MQTT
+    description: Porta del broker indicato a mano (predefinita 1883).
+  mqtt_username:
+    name: Utente MQTT
+    description: Utente del broker indicato a mano.
+  mqtt_password:
+    name: Password MQTT
+    description: Password del broker indicato a mano.

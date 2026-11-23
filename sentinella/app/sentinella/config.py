@@ -20,6 +20,7 @@ DEFAULTS = {
     "device_entities": True,
     "ha_links": True,
     "deep_scan": False,
+    "language": "auto",
 }
 
 

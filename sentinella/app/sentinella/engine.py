@@ -6,14 +6,16 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import discovery, enrich, entities, ha, halink, netinfo, portscan, probes, rules, upnp
+from . import discovery, enrich, entities, ha, halink, i18n, netinfo, portscan, probes, rules, upnp
+from .i18n import L, t
 from .store import Store
 
 log = logging.getLogger(__name__)
 
 UPNP_ERRORS = {
-    "606": "il router non autorizza questa operazione da un dispositivo diverso da quello che ha aperto la porta",
-    "714": "l'apertura non esiste più sul router",
+    "606": L("il router non autorizza questa operazione da un dispositivo diverso da quello che ha aperto la porta",
+             "the router does not allow this operation from a device other than the one that opened the port"),
+    "714": L("l'apertura non esiste più sul router", "the forward no longer exists on the router"),
 }
 MAX_INCIDENTS = 200
 REPUBLISH_SECONDS = 600
@@ -31,6 +33,7 @@ class Engine:
         self._scan_lock = threading.Lock()
         self._publish_lock = threading.Lock()
         ha.configure(options)
+        i18n.resolve(options.get("language"), ha.language())
 
     # ------------------------------------------------------------------ scansione
 
@@ -51,7 +54,7 @@ class Engine:
             incidents = self._scan()
             self._record(started)
         except Exception as exc:
-            log.exception("Scansione fallita")
+            log.exception("Scan failed")
             self.status["error"] = str(exc)
         finally:
             self.status.update(running=False, phase="")
@@ -60,20 +63,22 @@ class Engine:
         self._announce(incidents)
 
     def _scan(self) -> list[dict]:
-        self.status["phase"] = "Ricerca dei dispositivi"
+        i18n.resolve(self.options.get("language"), ha.language())
+        self.status["phase"] = t("Ricerca dei dispositivi", "Discovering devices")
         nets = netinfo.resolve_networks(self.options.get("networks"))
         if not nets:
-            raise RuntimeError("nessuna rete locale individuata: indicala nell'opzione 'networks'")
+            raise RuntimeError(t("nessuna rete locale individuata: indicala nell'opzione 'networks'",
+                                 "no local network detected: set it in the 'networks' option"))
         hosts: dict[str, dict] = {}
         for net in nets:
             for host in discovery.discover(net):
                 hosts.setdefault(host["ip"], host)
-        log.info("Reti %s: %d dispositivi accesi", [str(n) for n in nets], len(hosts))
+        log.info("Networks %s: %d devices online", [str(n) for n in nets], len(hosts))
 
-        self.status["phase"] = "Scansione delle porte"
+        self.status["phase"] = t("Scansione delle porte", "Scanning ports")
         open_ports = portscan.scan(list(hosts), self.options.get("extra_ports") or [])
 
-        self.status["phase"] = "Verifica dei servizi"
+        self.status["phase"] = t("Verifica dei servizi", "Checking services")
         active = bool(self.options.get("active_probes", True))
         pairs = [(ip, port) for ip, ports in open_ports.items() for port in ports]
         with ThreadPoolExecutor(max_workers=32) as pool:
@@ -82,11 +87,11 @@ class Engine:
         for (ip, port), info in zip(pairs, infos):
             details[ip].append({"port": port, "service": portscan.PORTS.get(port, "?"), "info": info})
 
-        self.status["phase"] = "Identificazione dei dispositivi"
+        self.status["phase"] = t("Identificazione dei dispositivi", "Identifying devices")
         raw = enrich.collect(list(hosts))
         deep = {}
         if self.options.get("deep_scan"):
-            self.status["phase"] = "Scansione approfondita"
+            self.status["phase"] = t("Scansione approfondita", "Deep scan")
             deep = enrich.deep_scan(open_ports)
             for ip, found_deep in deep.items():
                 for entry in details.get(ip, []):
@@ -94,12 +99,12 @@ class Engine:
                         entry["info"]["product"] = found_deep["ports"][entry["port"]]
         registry = halink.fetch() if self.options.get("ha_links", True) else None
 
-        self.status["phase"] = "Controllo del router"
+        self.status["phase"] = t("Controllo del router", "Checking the router")
         router = upnp.snapshot()
         gateway = netinfo.gateway() or (router.get("igd") or {}).get("host")
         my_ip = netinfo.local_ip()
 
-        self.status["phase"] = "Analisi"
+        self.status["phase"] = t("Analisi", "Analysing")
         now = _now()
         with self.store.lock:
             data = self.store.data
@@ -212,10 +217,12 @@ class Engine:
             dev = devices[key]
             covered.add(f"new-device:{key}")
             covered.update(i for i in fresh_by_id if i.split(":", 1)[-1].startswith(key + ":"))
-            ports = ", ".join(str(p["port"]) for p in dev.get("ports", [])) or "nessuna"
-            add("nuovo_dispositivo", "medium", "Nuovo dispositivo collegato alla rete",
-                f"{entities.label(dev)} ({dev['ip']}, MAC {dev.get('mac') or 'sconosciuto'}) non era mai stato visto. "
-                f"Porte aperte: {ports}.", key)
+            ports = ", ".join(str(p["port"]) for p in dev.get("ports", [])) or t("nessuna", "none")
+            add("new_device", "medium", t("Nuovo dispositivo collegato alla rete", "New device joined the network"),
+                t("{name} ({ip}, MAC {mac}) non era mai stato visto. Porte aperte: {ports}.",
+                  "{name} ({ip}, MAC {mac}) had never been seen before. Open ports: {ports}.").format(
+                      name=entities.label(dev), ip=dev["ip"], mac=dev.get("mac") or t("sconosciuto", "unknown"),
+                      ports=ports), key)
 
         for key, dev in devices.items():
             if key in new_keys or not dev.get("online") or key not in old_ports:
@@ -226,9 +233,12 @@ class Engine:
                     continue
                 finding = fresh_by_id.get(f"port:{key}:{port}")
                 covered.add(f"port:{key}:{port}")
-                add("nuovo_servizio", finding["severity"] if finding else "low",
-                    f"Nuovo servizio in ascolto: porta {port} ({entry['service']})",
-                    f"{entities.label(dev)} ({dev['ip']}) ha aperto la porta {port}, che nella scansione precedente era chiusa."
+                add("new_service", finding["severity"] if finding else "low",
+                    t("Nuovo servizio in ascolto: porta {port} ({service})",
+                      "New service listening: port {port} ({service})").format(port=port, service=entry["service"]),
+                    t("{name} ({ip}) ha aperto la porta {port}, che nella scansione precedente era chiusa.",
+                      "{name} ({ip}) opened port {port}, which was closed in the previous scan.").format(
+                          name=entities.label(dev), ip=dev["ip"], port=port)
                     + (f" {finding['title']}." if finding else ""), key, str(port))
 
         for m in new_router.get("mappings", []):
@@ -237,41 +247,50 @@ class Engine:
             fid = f"upnp-map:{m['protocol']}:{m['external_port']}"
             covered.add(fid)
             target = next((d for d in devices.values() if d.get("ip") == m["internal_client"] and d.get("online")), None)
-            add("porta_esposta", (fresh_by_id.get(fid) or {}).get("severity", "high"),
-                f"Nuova porta aperta verso Internet: {m['external_port']}/{m['protocol']}",
-                f"Il router ora inoltra la porta {m['external_port']}/{m['protocol']} a "
-                f"{entities.label(target) if target else m['internal_client']} "
-                f"({m['internal_client']}:{m['internal_port']})"
-                + (f", descrizione: {m['description']}" if m.get("description") else "") + ".",
-                target["key"] if target else None, f"{m['protocol']}{m['external_port']}")
+            port_label = f"{m['external_port']}/{m['protocol']}"
+            detail = t("Il router ora inoltra la porta {port} a {name} ({to})",
+                       "The router now forwards port {port} to {name} ({to})").format(
+                           port=port_label, name=entities.label(target) if target else m["internal_client"],
+                           to=f"{m['internal_client']}:{m['internal_port']}")
+            if m.get("description"):
+                detail += t(", descrizione: {d}", ", description: {d}").format(d=m["description"])
+            add("exposed_port", (fresh_by_id.get(fid) or {}).get("severity", "high"),
+                t("Nuova porta aperta verso Internet: {port}", "New port open to the Internet: {port}").format(port=port_label),
+                detail + ".", target["key"] if target else None, f"{m['protocol']}{m['external_port']}")
 
         old_mac, new_mac = old_router.get("gateway_mac"), new_router.get("gateway_mac")
         if old_mac and new_mac and old_mac != new_mac and old_router.get("gateway") == new_router.get("gateway"):
-            add("router_cambiato", "critical", "L'indirizzo fisico del router è cambiato",
-                f"All'indirizzo {new_router.get('gateway')} ora risponde il MAC {new_mac} invece di {old_mac}. "
-                "Se non hai sostituito il router, un dispositivo potrebbe starsi spacciando per lui (ARP spoofing).",
-                ref="mac")
+            add("router_changed", "critical",
+                t("L'indirizzo fisico del router è cambiato", "The router's hardware address has changed"),
+                t("All'indirizzo {ip} ora risponde il MAC {new} invece di {old}. Se non hai sostituito il router, "
+                  "un dispositivo potrebbe starsi spacciando per lui (ARP spoofing).",
+                  "MAC {new} now answers at {ip} instead of {old}. If you did not replace the router, "
+                  "a device may be impersonating it (ARP spoofing).").format(
+                      ip=new_router.get("gateway"), new=new_mac, old=old_mac), ref="mac")
 
         if not old_router.get("available") and new_router.get("available") and "available" in old_router:
             covered.add("upnp-enabled")
-            add("upnp_attivato", "medium", "UPnP è stato attivato sul router",
-                "Nella scansione precedente UPnP non rispondeva: ora qualunque dispositivo può aprire porte verso Internet.",
+            add("upnp_enabled", "medium", t("UPnP è stato attivato sul router", "UPnP has been enabled on the router"),
+                t("Nella scansione precedente UPnP non rispondeva: ora qualunque dispositivo può aprire porte verso Internet.",
+                  "UPnP did not answer in the previous scan: now any device can open ports to the Internet."),
                 ref="upnp")
 
         # Falle gravi comparse senza che sia cambiata una porta (es. un servizio che ora accetta chiunque).
         for fid, f in fresh_by_id.items():
             if fid in covered or f["severity"] not in ("critical", "high"):
                 continue
-            add("nuova_falla", f["severity"], f"Nuova falla: {f['title']}", f["detail"], f.get("device_key"), fid)
+            add("new_vulnerability", f["severity"],
+                t("Nuova falla: {title}", "New vulnerability: {title}").format(title=f["title"]),
+                f["detail"], f.get("device_key"), fid)
         return out
 
     def _announce(self, incidents: list[dict]) -> None:
         for incident in incidents:
-            log.warning("Incidente: %s - %s", incident["title"], incident["detail"])
-            ha.fire_event("sentinella_incidente", {
-                "tipo": incident["type"], "gravita": entities.SEV_IT[incident["severity"]],
-                "titolo": incident["title"], "dettaglio": incident["detail"],
-                "dispositivo": incident.get("device"), "ip": incident.get("ip"),
+            log.warning("Incident: %s - %s", incident["title"], incident["detail"])
+            ha.fire_event("sentinella_incident", {
+                "type": incident["type"], "severity": incident["severity"],
+                "title": incident["title"], "detail": incident["detail"],
+                "device": incident.get("device"), "ip": incident.get("ip"),
             })
         if self.options.get("notify", True):
             ha.notify([f"{i['title']}" + (f" ({i['device']})" if i.get("device") else "") for i in incidents])
@@ -295,15 +314,15 @@ class Engine:
         with self._publish_lock:
             try:
                 with self.store.lock:
-                    missing = [i["title"] for i in rules.ROUTER_CHECKLIST
+                    missing = [str(i["title"]) for i in rules.ROUTER_CHECKLIST
                                if not self.store.data["checklist"].get(i["id"])]
                     status = {**self.status, "checklist_total": len(rules.ROUTER_CHECKLIST),
                               "checklist_missing": missing}
                     items = entities.build(self.store.data, status, bool(self.options.get("device_entities", True)))
                 ha.publish(items)
             except Exception as exc:
-                log.exception("Pubblicazione verso Home Assistant non riuscita")
-                ha.status["error"] = f"errore interno: {exc}"
+                log.exception("Publishing to Home Assistant failed")
+                ha.status["error"] = t("errore interno: {e}", "internal error: {e}").format(e=exc)
 
     def publish_async(self) -> None:
         threading.Thread(target=self.publish, name="publish", daemon=True).start()
@@ -368,7 +387,7 @@ class Engine:
             if not dev:
                 raise KeyError(key)
             if dev.get("online"):
-                raise ValueError("il dispositivo è ancora in rete")
+                raise ValueError(t("il dispositivo è ancora in rete", "the device is still online"))
             del data["devices"][key]
             for fid in [i for i, f in data["findings"].items() if f.get("device_key") == key]:
                 del data["findings"][fid]
@@ -394,28 +413,31 @@ class Engine:
             raise KeyError(fid)
         igd = upnp.find_gateway()
         if not igd:
-            raise RuntimeError("il router non risponde più via UPnP: chiudi la porta dal suo pannello")
+            raise RuntimeError(t("il router non risponde più via UPnP: chiudi la porta dal suo pannello",
+                                 "the router no longer answers over UPnP: close the port from its admin panel"))
         try:
             upnp.delete_mapping(igd, action["external_port"], action["protocol"], action.get("remote_host", ""))
         except upnp.UpnpError as exc:
-            reason = UPNP_ERRORS.get(str(exc), f"errore UPnP {exc}")
-            raise RuntimeError(f"Il router ha rifiutato la chiusura: {reason}. Chiudila dal pannello del router.") from exc
+            reason = str(UPNP_ERRORS.get(str(exc), t("errore UPnP {e}", "UPnP error {e}").format(e=exc)))
+            raise RuntimeError(t("Il router ha rifiutato la chiusura: {r}. Chiudila dal pannello del router.",
+                                 "The router refused to close it: {r}. Close it from the router's admin panel.").format(r=reason)) from exc
         # Si rilegge l'elenco dal router: il problema si chiude solo se l'apertura è davvero sparita.
         still_there = any(
             m["external_port"] == action["external_port"] and m["protocol"] == action["protocol"]
             for m in upnp.list_mappings(igd))
         with self.store.lock:
             if still_there:
-                raise RuntimeError("Il router ha accettato la richiesta ma l'apertura è ancora presente: chiudila dal suo pannello.")
+                raise RuntimeError(t("Il router ha accettato la richiesta ma l'apertura è ancora presente: chiudila dal suo pannello.",
+                                     "The router accepted the request but the forward is still there: close it from its admin panel."))
             finding.update(status="resolved", resolved_at=_now())
             router = self.store.data.get("router", {})
             router["mappings"] = [
                 m for m in router.get("mappings", [])
                 if not (m["external_port"] == action["external_port"] and m["protocol"] == action["protocol"])]
             self.store.save()
-        log.info("Chiusa la porta %s/%s via UPnP", action["external_port"], action["protocol"])
+        log.info("Closed port %s/%s over UPnP", action["external_port"], action["protocol"])
         self.publish_async()
-        return f"Porta {action['external_port']}/{action['protocol']} chiusa."
+        return t("Porta {p} chiusa.", "Port {p} closed.").format(p=f"{action['external_port']}/{action['protocol']}")
 
     # ------------------------------------------------------------------ vista per l'interfaccia
 
@@ -430,7 +452,7 @@ class Engine:
             return {
                 "status": dict(self.status),
                 "ha": {**ha.status, "links": dict(halink.status)},
-                "types": enrich.TYPES,
+                "types": {k: str(v) for k, v in enrich.TYPES.items()},
                 "counts": entities.counts(data),
                 "score": entities.score(data),
                 "findings": findings,
@@ -438,7 +460,8 @@ class Engine:
                 "incidents": list(reversed(data.get("incidents", []))),
                 "router": data["router"],
                 "checklist": [{**item, "done": bool(data["checklist"].get(item["id"]))}
-                              for item in rules.ROUTER_CHECKLIST],
+                              for item in rules.checklist()],
+                "lang": i18n.language(),
                 "scans": data["scans"][-30:],
                 "networks": data["networks"],
             }

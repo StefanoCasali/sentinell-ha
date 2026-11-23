@@ -1,11 +1,25 @@
-"""Entità esposte a Home Assistant: descrizione indipendente dal canale (MQTT o API)."""
+"""Entità esposte a Home Assistant: descrizione indipendente dal canale (MQTT o API).
+
+Gli identificativi (`id`) e le chiavi degli attributi sono stabili e non
+dipendono dalla lingua: automazioni e plance non si rompono cambiando lingua.
+Nomi delle entità e valori testuali seguono invece la lingua corrente.
+"""
 
 import re
 from datetime import datetime, timezone
 
-SEV_IT = {"critical": "critico", "high": "alto", "medium": "medio", "low": "basso", "info": "informativo"}
+from .i18n import L, t
+
+SEV_LABELS = {
+    "critical": L("critico", "critical"), "high": L("alto", "high"), "medium": L("medio", "medium"),
+    "low": L("basso", "low"), "info": L("informativo", "info"),
+}
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 MAX_ITEMS = 50  # oltre i 16 KB di attributi Home Assistant smette di registrarli nello storico
+
+
+def sev(severity: str) -> str:
+    return str(SEV_LABELS[severity])
 
 
 def iso(ts) -> str | None:
@@ -16,20 +30,6 @@ def label(dev: dict) -> str:
     info = dev.get("info") or {}
     return (dev.get("name") or info.get("friendly_name") or dev.get("hostname") or info.get("model")
             or dev.get("vendor") or dev.get("ip") or "?")
-
-
-def ha_summary(dev: dict) -> dict:
-    """Riferimenti a ciò che Home Assistant conosce già di questo dispositivo."""
-    link = dev.get("ha") or {}
-    devices = link.get("devices", [])
-    return {
-        "collegato_a_home_assistant": bool(link.get("linked")),
-        "dispositivi_ha": [{"nome": d["name"], "id": d["id"], "integrazioni": d["integrations"],
-                            "area": d["area"], "trovato_per": d["match"]} for d in devices],
-        "integrazioni_ha": sorted({i for d in devices for i in d["integrations"]}),
-        "entita_ha": [e for d in devices for e in d["entities"]][:15]
-                     + [e["entity_id"] for e in link.get("entities", [])],
-    }
 
 
 def slug(key: str) -> str:
@@ -61,9 +61,23 @@ def score(data: dict) -> int:
     return max(0, 100 - penalty)
 
 
+def ha_summary(dev: dict) -> dict:
+    """Riferimenti a ciò che Home Assistant conosce già di questo dispositivo."""
+    link = dev.get("ha") or {}
+    devices = link.get("devices", [])
+    return {
+        "linked_to_home_assistant": bool(link.get("linked")),
+        "ha_devices": [{"name": d["name"], "id": d["id"], "integrations": d["integrations"],
+                        "area": d["area"], "matched_by": d["match"]} for d in devices],
+        "ha_integrations": sorted({i for d in devices for i in d["integrations"]}),
+        "ha_entities": [e for d in devices for e in d["entities"]][:15]
+                       + [e["entity_id"] for e in link.get("entities", [])],
+    }
+
+
 def _dev_item(dev: dict) -> dict:
-    return {"nome": label(dev), "ip": dev.get("ip"), "mac": dev.get("mac"), "produttore": dev.get("vendor"),
-            "tipo": (dev.get("info") or {}).get("type_label")}
+    return {"name": label(dev), "ip": dev.get("ip"), "mac": dev.get("mac"), "vendor": dev.get("vendor"),
+            "type": (dev.get("info") or {}).get("type_label")}
 
 
 def _sensor(eid, name, state, icon, attrs=None, **extra):
@@ -82,9 +96,10 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
     untrusted = [d for d in online if not d.get("trusted")]
     review = [d for d in devices if d.get("needs_review")]
     linked = [d for d in online if (d.get("ha") or {}).get("linked")]
+    unidentified = t("Non identificato", "Unidentified")
     by_type: dict[str, int] = {}
     for d in online:
-        kind = (d.get("info") or {}).get("type_label") or "Non identificato"
+        kind = (d.get("info") or {}).get("type_label") or unidentified
         by_type[kind] = by_type.get(kind, 0) + 1
     by_key = data["devices"]
     c = counts(data)
@@ -96,82 +111,97 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
     mappings = router.get("mappings", [])
     last_scan = data["scans"][-1] if data["scans"] else None
     newest = max(devices, key=lambda d: d.get("first_seen", 0), default=None)
-    checklist_total = status.get("checklist_total", 0)
+    last_incident = all_incidents[-1] if all_incidents else None
     checklist_done = sum(1 for v in data.get("checklist", {}).values() if v)
 
     def where(f):
         dev = by_key.get(f.get("device_key") or "")
         return label(dev) if dev else "router"
 
-    finding_items = [{"gravita": SEV_IT[f["severity"]], "titolo": f["title"], "dove": where(f),
-                      "ip": f.get("ip"), "porta": f.get("port")} for f in open_findings[:MAX_ITEMS]]
-    incident_items = [{"quando": iso(i["ts"]), "gravita": SEV_IT[i["severity"]], "titolo": i["title"],
-                       "dettaglio": i["detail"]} for i in incidents[-MAX_ITEMS:]]
+    finding_items = [{"severity": f["severity"], "title": f["title"], "where": where(f),
+                      "ip": f.get("ip"), "port": f.get("port")} for f in open_findings[:MAX_ITEMS]]
+    incident_items = [{"when": iso(i["ts"]), "severity": i["severity"], "title": i["title"],
+                       "detail": i["detail"]} for i in incidents[-MAX_ITEMS:]]
     worst = next((s for s in SEV_ORDER if c[s]), None)
     measurement = {"state_class": "measurement"}
+    u_dev, u_find = t("dispositivi", "devices"), t("problemi", "findings")
 
     out = [
         # --- dispositivi
-        _sensor("dispositivi_online", "Dispositivi in rete", len(online), "mdi:lan-connect",
-                {"dispositivi": [_dev_item(d) for d in online[:MAX_ITEMS]], "per_tipo": by_type},
-                unit="dispositivi", **measurement),
-        _sensor("dispositivi_domotica", "Dispositivi collegati alla domotica", len(linked), "mdi:home-automation",
-                {"dispositivi": [{**_dev_item(d), "integrazioni": ha_summary(d)["integrazioni_ha"]}
-                                 for d in linked[:MAX_ITEMS]],
-                 "non_collegati": [_dev_item(d) for d in online if not (d.get("ha") or {}).get("linked")][:MAX_ITEMS]},
-                unit="dispositivi", **measurement),
-        _sensor("dispositivi_noti", "Dispositivi conosciuti", len(devices), "mdi:lan", unit="dispositivi", **measurement),
-        _sensor("dispositivi_non_fidati", "Dispositivi non fidati", len(untrusted), "mdi:help-network",
-                {"dispositivi": [_dev_item(d) for d in untrusted[:MAX_ITEMS]]}, unit="dispositivi", **measurement),
-        _binary("nuovo_dispositivo", "Nuovo dispositivo rilevato", review,
-                {"dispositivi": [{**_dev_item(d), "rilevato": iso(d.get("first_seen"))} for d in review[:MAX_ITEMS]]},
+        _sensor("dispositivi_online", t("Dispositivi in rete", "Devices online"), len(online), "mdi:lan-connect",
+                {"devices": [_dev_item(d) for d in online[:MAX_ITEMS]], "by_type": by_type},
+                unit=u_dev, **measurement),
+        _sensor("dispositivi_domotica", t("Dispositivi collegati alla domotica", "Devices linked to the smart home"),
+                len(linked), "mdi:home-automation",
+                {"devices": [{**_dev_item(d), "integrations": ha_summary(d)["ha_integrations"]}
+                             for d in linked[:MAX_ITEMS]],
+                 "not_linked": [_dev_item(d) for d in online if not (d.get("ha") or {}).get("linked")][:MAX_ITEMS]},
+                unit=u_dev, **measurement),
+        _sensor("dispositivi_noti", t("Dispositivi conosciuti", "Known devices"), len(devices), "mdi:lan",
+                unit=u_dev, **measurement),
+        _sensor("dispositivi_non_fidati", t("Dispositivi non fidati", "Untrusted devices"), len(untrusted),
+                "mdi:help-network", {"devices": [_dev_item(d) for d in untrusted[:MAX_ITEMS]]},
+                unit=u_dev, **measurement),
+        _binary("nuovo_dispositivo", t("Nuovo dispositivo rilevato", "New device detected"), review,
+                {"devices": [{**_dev_item(d), "detected": iso(d.get("first_seen"))} for d in review[:MAX_ITEMS]]},
                 icon="mdi:lan-pending"),
-        _sensor("ultimo_dispositivo", "Ultimo dispositivo comparso", label(newest) if newest else None,
-                "mdi:new-box",
-                {**_dev_item(newest), "rilevato": iso(newest.get("first_seen")), "fidato": bool(newest.get("trusted"))}
+        _sensor("ultimo_dispositivo", t("Ultimo dispositivo comparso", "Latest device seen"),
+                label(newest) if newest else None, "mdi:new-box",
+                {**_dev_item(newest), "detected": iso(newest.get("first_seen")), "trusted": bool(newest.get("trusted"))}
                 if newest else {}),
         # --- falle
-        _sensor("problemi_aperti", "Problemi aperti", sum(c.values()), "mdi:shield-alert",
-                {"problemi": finding_items, **{SEV_IT[s]: n for s, n in c.items()}}, unit="problemi", **measurement),
-        _sensor("problemi_critici", "Problemi critici", c["critical"], "mdi:alert-octagon", unit="problemi", **measurement),
-        _sensor("problemi_alti", "Problemi alti", c["high"], "mdi:alert", unit="problemi", **measurement),
-        _sensor("problemi_medi", "Problemi medi", c["medium"], "mdi:alert-outline", unit="problemi", **measurement),
-        _sensor("problemi_bassi", "Problemi bassi", c["low"] + c["info"], "mdi:information-outline",
-                unit="problemi", **measurement),
-        _sensor("gravita_massima", "Gravità massima", SEV_IT[worst] if worst else "nessuna", "mdi:shield-half-full"),
-        _binary("falle", "Falle di sicurezza", c["critical"] + c["high"] + c["medium"],
-                {"problemi": [i for i in finding_items if i["gravita"] in ("critico", "alto", "medio")]},
+        _sensor("problemi_aperti", t("Problemi aperti", "Open findings"), sum(c.values()), "mdi:shield-alert",
+                {"findings": finding_items, **c}, unit=u_find, **measurement),
+        _sensor("problemi_critici", t("Problemi critici", "Critical findings"), c["critical"], "mdi:alert-octagon",
+                unit=u_find, **measurement),
+        _sensor("problemi_alti", t("Problemi alti", "High findings"), c["high"], "mdi:alert",
+                unit=u_find, **measurement),
+        _sensor("problemi_medi", t("Problemi medi", "Medium findings"), c["medium"], "mdi:alert-outline",
+                unit=u_find, **measurement),
+        _sensor("problemi_bassi", t("Problemi bassi", "Low findings"), c["low"] + c["info"],
+                "mdi:information-outline", unit=u_find, **measurement),
+        _sensor("gravita_massima", t("Gravità massima", "Highest severity"),
+                sev(worst) if worst else t("nessuna", "none"), "mdi:shield-half-full", {"severity": worst}),
+        _binary("falle", t("Falle di sicurezza", "Security vulnerabilities"), c["critical"] + c["high"] + c["medium"],
+                {"findings": [i for i in finding_items if i["severity"] in ("critical", "high", "medium")]},
                 device_class="problem"),
-        _sensor("punteggio", "Punteggio di sicurezza", score(data), "mdi:shield-star", unit="%", **measurement),
+        _sensor("punteggio", t("Punteggio di sicurezza", "Security score"), score(data), "mdi:shield-star",
+                unit="%", **measurement),
         # --- incidenti
-        _binary("incidente", "Incidente di sicurezza", incidents, {"incidenti": incident_items},
-                device_class="safety"),
-        _sensor("incidenti", "Incidenti da verificare", len(incidents), "mdi:shield-bug",
-                {"incidenti": incident_items}, unit="incidenti", **measurement),
-        _sensor("ultimo_incidente", "Ultimo incidente", all_incidents[-1]["title"] if all_incidents else None,
-                "mdi:shield-bug-outline",
-                {"quando": iso(all_incidents[-1]["ts"]), "gravita": SEV_IT[all_incidents[-1]["severity"]],
-                 "dettaglio": all_incidents[-1]["detail"], "verificato": bool(all_incidents[-1].get("acknowledged"))}
-                if all_incidents else {}),
+        _binary("incidente", t("Incidente di sicurezza", "Security incident"), incidents,
+                {"incidents": incident_items}, device_class="safety"),
+        _sensor("incidenti", t("Incidenti da verificare", "Incidents to review"), len(incidents), "mdi:shield-bug",
+                {"incidents": incident_items}, unit=t("incidenti", "incidents"), **measurement),
+        _sensor("ultimo_incidente", t("Ultimo incidente", "Latest incident"),
+                last_incident["title"] if last_incident else None, "mdi:shield-bug-outline",
+                {"when": iso(last_incident["ts"]), "severity": last_incident["severity"],
+                 "type": last_incident["type"], "detail": last_incident["detail"],
+                 "acknowledged": bool(last_incident.get("acknowledged"))} if last_incident else {}),
         # --- router
-        _sensor("porte_esposte", "Porte aperte verso Internet", len(mappings), "mdi:door-open",
-                {"porte": [{"porta": f"{m['external_port']}/{m['protocol']}",
-                            "verso": f"{m['internal_client']}:{m['internal_port']}",
-                            "descrizione": m.get("description", "")} for m in mappings[:MAX_ITEMS]],
-                 "nota": "solo aperture UPnP: i port forwarding manuali non sono leggibili"},
-                unit="porte", **measurement),
-        _binary("upnp", "UPnP attivo sul router", router.get("available"), icon="mdi:router-wireless-settings"),
-        _sensor("ip_pubblico", "Indirizzo IP pubblico", router.get("external_ip"), "mdi:ip-network",
-                {"dietro_nat_operatore": bool(router.get("behind_nat"))}, entity_category="diagnostic"),
-        _sensor("verifiche_router", "Verifiche manuali completate", checklist_done, "mdi:clipboard-check",
-                {"totale": checklist_total, "mancanti": status.get("checklist_missing", [])}, **measurement),
+        _sensor("porte_esposte", t("Porte aperte verso Internet", "Ports open to the Internet"), len(mappings),
+                "mdi:door-open",
+                {"ports": [{"port": f"{m['external_port']}/{m['protocol']}",
+                            "to": f"{m['internal_client']}:{m['internal_port']}",
+                            "description": m.get("description", "")} for m in mappings[:MAX_ITEMS]],
+                 "note": t("solo aperture UPnP: i port forwarding manuali non sono leggibili",
+                           "UPnP forwards only: manual port forwards cannot be read")},
+                unit=t("porte", "ports"), **measurement),
+        _binary("upnp", t("UPnP attivo sul router", "UPnP enabled on the router"), router.get("available"),
+                icon="mdi:router-wireless-settings"),
+        _sensor("ip_pubblico", t("Indirizzo IP pubblico", "Public IP address"), router.get("external_ip"),
+                "mdi:ip-network", {"behind_isp_nat": bool(router.get("behind_nat"))}, entity_category="diagnostic"),
+        _sensor("verifiche_router", t("Verifiche manuali completate", "Manual checks completed"), checklist_done,
+                "mdi:clipboard-check",
+                {"total": status.get("checklist_total", 0), "missing": status.get("checklist_missing", [])},
+                **measurement),
         # --- scansione
-        _sensor("ultima_scansione", "Ultima scansione", iso(last_scan["ts"]) if last_scan else None, None,
-                {"reti": data.get("networks", []), "errore": status.get("error")},
+        _sensor("ultima_scansione", t("Ultima scansione", "Last scan"), iso(last_scan["ts"]) if last_scan else None,
+                None, {"networks": data.get("networks", []), "error": status.get("error")},
                 device_class="timestamp", entity_category="diagnostic"),
-        _sensor("durata_scansione", "Durata ultima scansione", last_scan["duration"] if last_scan else None,
-                "mdi:timer-outline", unit="s", device_class="duration", entity_category="diagnostic", **measurement),
-        _binary("scansione_in_corso", "Scansione in corso", status.get("running"),
+        _sensor("durata_scansione", t("Durata ultima scansione", "Last scan duration"),
+                last_scan["duration"] if last_scan else None, "mdi:timer-outline", unit="s",
+                device_class="duration", entity_category="diagnostic", **measurement),
+        _binary("scansione_in_corso", t("Scansione in corso", "Scan in progress"), status.get("running"),
                 device_class="running", entity_category="diagnostic"),
     ]
 
@@ -183,21 +213,21 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
         for dev in devices:
             info = dev.get("info") or {}
             out.append(_binary(
-                device_entity_id(dev["key"]), "In rete", dev.get("online"),
-                # "sorgente" serve a riconoscere le proprie entità quando si rilegge il registro di Home Assistant.
-                {"sorgente": "sentinella", "ip": dev.get("ip"), "mac": dev.get("mac"),
-                 "mac_privato": bool(info.get("private_mac")),
-                 "produttore": info.get("manufacturer") or dev.get("vendor"),
-                 "hostname": dev.get("hostname"), "tipo": info.get("type_label"),
-                 "modello": info.get("model"), "nome_rilevato": info.get("friendly_name"),
-                 "sistema_operativo": info.get("os"), "firmware": info.get("firmware"),
-                 "nome_netbios": info.get("netbios"), "servizi_annunciati": info.get("services", []),
-                 "fidato": bool(dev.get("trusted")), "router": bool(dev.get("is_gateway")),
-                 "porte_aperte": [" ".join(filter(None, [str(p["port"]), p["service"], p.get("info", {}).get("product")]))
-                                  for p in dev.get("ports", [])],
-                 "problemi_aperti": open_by_device.get(dev["key"], 0),
+                device_entity_id(dev["key"]), t("In rete", "Online"), dev.get("online"),
+                # "managed_by" serve a riconoscere le proprie entità quando si rilegge il registro di Home Assistant.
+                {"managed_by": "sentinella", "ip": dev.get("ip"), "mac": dev.get("mac"),
+                 "private_mac": bool(info.get("private_mac")),
+                 "vendor": info.get("manufacturer") or dev.get("vendor"),
+                 "hostname": dev.get("hostname"), "type": info.get("type_label"),
+                 "model": info.get("model"), "detected_name": info.get("friendly_name"),
+                 "operating_system": info.get("os"), "firmware": info.get("firmware"),
+                 "netbios_name": info.get("netbios"), "announced_services": info.get("services", []),
+                 "trusted": bool(dev.get("trusted")), "router": bool(dev.get("is_gateway")),
+                 "open_ports": [" ".join(filter(None, [str(p["port"]), p["service"], p.get("info", {}).get("product")]))
+                                for p in dev.get("ports", [])],
+                 "open_findings": open_by_device.get(dev["key"], 0),
                  **ha_summary(dev),
-                 "prima_volta": iso(dev.get("first_seen")), "ultima_volta": iso(dev.get("last_seen"))},
+                 "first_seen": iso(dev.get("first_seen")), "last_seen": iso(dev.get("last_seen"))},
                 device_class="connectivity",
                 device={"key": dev["key"], "name": label(dev), "mac": dev.get("mac"),
                         "vendor": info.get("manufacturer") or dev.get("vendor"), "model": info.get("model")}))

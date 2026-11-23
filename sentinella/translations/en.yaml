@@ -1,0 +1,40 @@
+configuration:
+  scan_interval_hours:
+    name: Scan interval (hours)
+    description: Hours between one automatic scan and the next.
+  networks:
+    name: Networks to scan
+    description: Networks in CIDR form, for example 192.168.1.0/24. Leave empty to scan the network Home Assistant is connected to.
+  extra_ports:
+    name: Extra ports
+    description: Additional TCP ports to check on every device.
+  active_probes:
+    name: Check for unauthenticated access
+    description: Verifies with a single read-only connection whether services accept access without a password (anonymous FTP, MQTT, Redis, VNC, SMBv1).
+  notify:
+    name: Notifications
+    description: Creates a Home Assistant notification for every security incident.
+  device_entities:
+    name: One sensor per device
+    description: Creates an "Online" binary sensor for every device found on the network.
+  ha_links:
+    name: Link devices to the smart home
+    description: Looks up which Home Assistant devices and entities already correspond to each network device.
+  deep_scan:
+    name: Deep scan
+    description: Detects service versions and the operating system with nmap. Slower and more noticeable to devices.
+  language:
+    name: Language
+    description: Language of the panel, findings, incidents and entity names. "auto" follows the Home Assistant language (Italian or English).
+  mqtt_host:
+    name: MQTT broker host
+    description: Only for a broker other than the Mosquitto add-on. Leave empty to use the broker provided by the Supervisor.
+  mqtt_port:
+    name: MQTT broker port
+    description: Port of the manually configured broker (default 1883).
+  mqtt_username:
+    name: MQTT username
+    description: Username for the manually configured broker.
+  mqtt_password:
+    name: MQTT password
+    description: Password for the manually configured broker.

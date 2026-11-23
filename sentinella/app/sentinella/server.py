@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import __version__, config
+from .i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -46,33 +47,33 @@ def make_handler(engine):
 
         def do_GET(self):
             if not self._allowed():
-                return self._json({"error": "accesso negato"}, 403)
+                return self._json({"error": t("accesso negato", "access denied")}, 403)
             path = self.path.split("?", 1)[0]
             if path == "/api/state":
                 return self._json({"version": __version__, **engine.snapshot()})
             if path in STATIC:
                 name, ctype = STATIC[path]
                 return self._send(200, (WEB / name).read_bytes(), ctype)
-            self._json({"error": "non trovato"}, 404)
+            self._json({"error": t("non trovato", "not found")}, 404)
 
         def do_POST(self):
             if not self._allowed():
-                return self._json({"error": "accesso negato"}, 403)
+                return self._json({"error": t("accesso negato", "access denied")}, 403)
             # L'intestazione personalizzata impedisce richieste inviate da altri siti aperti nel browser.
             if self.headers.get("X-Sentinella") != "1":
-                return self._json({"error": "richiesta non valida"}, 400)
+                return self._json({"error": t("richiesta non valida", "invalid request")}, 400)
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), 65536)
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError
             except ValueError:
-                return self._json({"error": "JSON non valido"}, 400)
+                return self._json({"error": t("JSON non valido", "invalid JSON")}, 400)
             path = self.path.split("?", 1)[0]
             try:
                 message = self._dispatch(path, body)
             except KeyError:
-                return self._json({"error": "elemento non trovato"}, 404)
+                return self._json({"error": t("elemento non trovato", "item not found")}, 404)
             except (RuntimeError, ValueError) as exc:
                 return self._json({"error": str(exc)}, 409)
             self._json({"ok": True, "message": message})
@@ -80,8 +81,8 @@ def make_handler(engine):
         def _dispatch(self, path: str, body: dict):
             if path == "/api/scan":
                 if not engine.start_scan():
-                    raise RuntimeError("una scansione è già in corso")
-                return "Scansione avviata."
+                    raise RuntimeError(t("una scansione è già in corso", "a scan is already running"))
+                return t("Scansione avviata.", "Scan started.")
             if path == "/api/finding":
                 engine.set_finding_status(str(body.get("id")), str(body.get("status")))
                 return None
@@ -99,7 +100,7 @@ def make_handler(engine):
                 return None
             if path == "/api/action":
                 if body.get("confirm") is not True:
-                    raise ValueError("conferma mancante")
+                    raise ValueError(t("conferma mancante", "confirmation missing"))
                 return engine.apply_action(str(body.get("id")))
             raise KeyError(path)
 
@@ -111,5 +112,5 @@ def serve(engine) -> None:
     host = "127.0.0.1" if config.DEV else "0.0.0.0"
     httpd = ThreadingHTTPServer((host, config.PORT), make_handler(engine))
     httpd.daemon_threads = True
-    log.info("Interfaccia in ascolto su %s:%s", host, config.PORT)
+    log.info("Web interface listening on %s:%s", host, config.PORT)
     httpd.serve_forever()

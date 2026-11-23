@@ -33,7 +33,7 @@ def _nmap(cidr: str) -> list[dict] | None:
         ).stdout
         root = ET.fromstring(out)
     except (OSError, ET.ParseError, subprocess.SubprocessError) as exc:
-        log.warning("nmap non riuscito (%s): uso il metodo di riserva", exc)
+        log.warning("nmap failed (%s): using the fallback method", exc)
         return None
     hosts = []
     for host in root.iter("host"):

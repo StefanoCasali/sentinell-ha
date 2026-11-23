@@ -26,7 +26,7 @@ def _run_json(cmd):
 
 def _clamp(ip: str, prefix: int) -> ipaddress.IPv4Network:
     if prefix < MIN_PREFIX:
-        log.warning("Rete /%s troppo ampia: limito la scansione al /24 di %s", prefix, ip)
+        log.warning("Network /%s too large: limiting the scan to the /24 of %s", prefix, ip)
         prefix = 24
     return ipaddress.ip_network(f"{ip}/{prefix}", strict=False)
 
@@ -81,12 +81,12 @@ def resolve_networks(configured: list[str]) -> list[ipaddress.IPv4Network]:
         text = str(item).strip()
         if text and "/" not in text:
             # "192.168.1.0" senza maschera verrebbe letto come un solo indirizzo.
-            log.warning("Rete %s senza maschera: la considero %s/24", text, text)
+            log.warning("Network %s has no mask: treating it as %s/24", text, text)
             text += "/24"
         try:
             net = ipaddress.ip_network(text, strict=False)
         except ValueError:
-            log.warning("Rete non valida nelle opzioni, ignorata: %r", item)
+            log.warning("Invalid network in the options, ignored: %r", item)
             continue
         if net.version == 4:
             nets.append(net)
