@@ -1,0 +1,4 @@
+app/.claude
+app/.devdata
+app/dev.py
+**/__pycache__

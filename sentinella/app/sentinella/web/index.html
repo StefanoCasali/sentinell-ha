@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinella</title>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Sentinella</h1>
+    <p id="subtitle">Controllo di sicurezza della rete di casa</p>
+  </div>
+  <button id="scan" class="primary">Avvia scansione</button>
+</header>
+
+<section id="summary" class="summary" aria-live="polite"></section>
+<div id="banner" class="banner" hidden></div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="findings" aria-selected="true">Problemi</button>
+  <button role="tab" data-tab="incidents">Incidenti</button>
+  <button role="tab" data-tab="devices">Dispositivi</button>
+  <button role="tab" data-tab="router">Router</button>
+  <button role="tab" data-tab="history">Cronologia</button>
+</nav>
+
+<main id="view"></main>
+
+<dialog id="confirm">
+  <h2 id="confirm-title"></h2>
+  <p id="confirm-text"></p>
+  <div class="dialog-actions">
+    <button id="confirm-no">Annulla</button>
+    <button id="confirm-yes" class="danger">Conferma</button>
+  </div>
+</dialog>
+
+<script src="static/app.js"></script>
+</body>
+</html>
