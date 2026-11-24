@@ -1,5 +1,5 @@
 name: Sentinella
-version: "0.4.0"
+version: "0.5.0"
 slug: sentinella
 description: Home network security monitor - devices, risky open ports, router exposure, incidents
 url: https://github.com/StefanoCasali/sentinell-ha

@@ -7,34 +7,30 @@
 <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-<header>
-  <div class="brand">
-    <h1>Sentinella</h1>
-    <p id="subtitle"></p>
-  </div>
-  <button id="scan" class="primary">Start scan</button>
+<header class="top">
+  <h1>
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+      <path d="M12 2.5 4 5.5v6c0 5 3.4 8.4 8 10 4.600-1.600 8-5 8-10v-6z"/><circle cx="12" cy="11.500" r="3.200"/><circle cx="12" cy="11.500" r=".6" fill="currentColor"/>
+    </svg>
+    Sentinella
+  </h1>
+  <button id="scan" class="btn primary"></button>
 </header>
 
-<section id="summary" class="summary" aria-live="polite"></section>
-<div id="banner" class="banner" hidden></div>
+<!-- Testi, radar e viste vengono composti da app.js nella lingua corrente. -->
+<section id="hero" class="hero" aria-live="polite"></section>
 
-<!-- I testi di schede e pulsanti vengono impostati da app.js nella lingua corrente. -->
-<nav class="tabs" role="tablist">
-  <button role="tab" data-tab="findings" aria-selected="true">Findings</button>
-  <button role="tab" data-tab="incidents">Incidents</button>
-  <button role="tab" data-tab="devices">Devices</button>
-  <button role="tab" data-tab="router">Router</button>
-  <button role="tab" data-tab="history">Status and history</button>
-</nav>
-
+<nav class="tabs" role="tablist"></nav>
 <main id="view"></main>
+
+<div id="toasts" role="status" aria-live="polite"></div>
 
 <dialog id="confirm">
   <h2 id="confirm-title"></h2>
   <p id="confirm-text"></p>
   <div class="dialog-actions">
-    <button id="confirm-no">Cancel</button>
-    <button id="confirm-yes" class="danger">Confirm</button>
+    <button id="confirm-no" class="btn"></button>
+    <button id="confirm-yes" class="btn danger"></button>
   </div>
 </dialog>
 

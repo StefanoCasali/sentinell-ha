@@ -37,7 +37,7 @@ For every network device Sentinella looks up who already knows it in Home Assist
 
 A "not linked" device is simply on the network without any integration using it: it can be normal (a phone, a TV) or a hint worth investigating. Cloud integrations that know neither IP nor MAC (Tuya, for example) cannot be recognised. Over MQTT, the `mqtt` integration may appear next to the others because Sentinella's own "Online" sensor is attached to the same device.
 
-The registry is read at every scan; the outcome is shown in the **Status and history** tab. Disable it with the `ha_links` option.
+The registry is read at every scan; the outcome is shown in the **Status** tab. Disable it with the `ha_links` option.
 
 ## Findings and incidents
 
@@ -134,7 +134,7 @@ Write networks with their mask (`192.168.1.0/24`); without a mask `/24` is assum
 
 ## If the sensors do not show up
 
-Open the **Status and history** tab of the panel: the first card says which channel is in use (MQTT, API or none), how many entities were published and, if MQTT cannot be used, why. The same information is in the add-on log, in the `Sensors to Home Assistant` line.
+Open the **Status** tab of the panel: the first card says which channel is in use (MQTT, API or none), how many entities were published and, if MQTT cannot be used, why. The same information is in the add-on log, in the `Sensors to Home Assistant` line.
 
 - **MQTT channel**: entities are under Settings > Devices & services > MQTT, device "Sentinella".
 - **API channel**: there is no device; search for `sentinella` in Developer tools > States.

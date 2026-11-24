@@ -346,6 +346,8 @@ class Engine:
             self.store.save()
 
     def run_forever(self) -> None:
+        if self.options.get("dev_skip_scan"):  # solo sviluppo: lascia intatti i dati di prova
+            return
         time.sleep(5)
         while True:
             self.scan()

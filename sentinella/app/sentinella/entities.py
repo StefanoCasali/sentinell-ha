@@ -5,6 +5,7 @@ dipendono dalla lingua: automazioni e plance non si rompono cambiando lingua.
 Nomi delle entità e valori testuali seguono invece la lingua corrente.
 """
 
+import math
 import re
 from datetime import datetime, timezone
 
@@ -58,7 +59,9 @@ def score(data: dict) -> int:
     untrusted = sum(1 for d in data["devices"].values() if d.get("online") and not d.get("trusted"))
     penalty = c["critical"] * 25 + c["high"] * 12 + c["medium"] * 5 + c["low"]
     penalty += min(15, untrusted * 3) + len(active_incidents(data)) * 5
-    return max(0, 100 - penalty)
+    # Curva decrescente: ogni problema in più pesa un po' meno, così il punteggio resta leggibile
+    # anche su reti con molte segnalazioni invece di schiacciarsi subito a zero.
+    return round(100 * math.exp(-penalty / 70))
 
 
 def ha_summary(dev: dict) -> dict:

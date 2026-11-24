@@ -37,7 +37,7 @@ Per ogni dispositivo di rete Sentinella cerca in Home Assistant chi lo conosce g
 
 Un dispositivo "non collegato" è semplicemente in rete senza che nessuna integrazione lo usi: può essere normale (un telefono, una TV) o un indizio da approfondire. Le integrazioni cloud che non conoscono né IP né MAC (per esempio Tuya) non possono essere riconosciute. Via MQTT, l'integrazione `mqtt` può comparire accanto alle altre perché il sensore "In rete" di Sentinella viene agganciato allo stesso dispositivo.
 
-Il registro viene letto a ogni scansione; l'esito è nella scheda **Stato e cronologia**. Si disattiva con l'opzione `ha_links`.
+Il registro viene letto a ogni scansione; l'esito è nella scheda **Stato**. Si disattiva con l'opzione `ha_links`.
 
 ## Falle e incidenti
 
@@ -134,7 +134,7 @@ Scrivi le reti con la maschera (`192.168.1.0/24`); senza maschera viene assunto 
 
 ## Se i sensori non compaiono
 
-Apri la scheda **Stato e cronologia** del pannello: la prima scheda dice quale canale è in uso (MQTT, API o nessuno), quante entità sono state pubblicate e, se MQTT non è utilizzabile, perché. La stessa informazione è nel log dell'add-on, nella riga `Sensors to Home Assistant`.
+Apri la scheda **Stato** del pannello: la prima scheda dice quale canale è in uso (MQTT, API o nessuno), quante entità sono state pubblicate e, se MQTT non è utilizzabile, perché. La stessa informazione è nel log dell'add-on, nella riga `Sensors to Home Assistant`.
 
 - **Canale MQTT**: le entità sono sotto Impostazioni > Dispositivi e servizi > MQTT, dispositivo "Sentinella".
 - **Canale API**: non c'è un dispositivo; cerca `sentinella` in Strumenti per sviluppatori > Stati.
