@@ -1,7 +1,7 @@
 name: Sentinella
-version: "0.5.0"
+version: "0.6.0"
 slug: sentinella
-description: Home network security monitor - devices, risky open ports, router exposure, incidents
+description: Home and smart home network monitor - LAN security, Zigbee, Z-Wave, Matter, Bluetooth and MQTT health
 url: https://github.com/StefanoCasali/sentinell-ha
 arch:
   - aarch64
@@ -14,6 +14,9 @@ ingress_port: 8099
 panel_icon: mdi:shield-search
 panel_title: Sentinella
 homeassistant_api: true
+# Supervisor API with the "homeassistant" role: needed to read the Home Assistant log (failed logins).
+hassio_api: true
+hassio_role: homeassistant
 # With an MQTT broker (Mosquitto add-on) sensors go through it; otherwise through the Home Assistant API.
 services:
   - mqtt:want
@@ -23,10 +26,19 @@ options:
   extra_ports: []
   active_probes: true
   notify: true
-  device_entities: true
   ha_links: true
   deep_scan: false
   language: auto
+  monitor_zigbee: true
+  monitor_zwave: true
+  monitor_matter: true
+  monitor_bluetooth: true
+  monitor_mqtt: true
+  monitor_access: true
+  zigbee2mqtt_in_zigbee: true
+  health_interval_minutes: 30
+  battery_threshold: 20
+  silent_hours: 48
 schema:
   scan_interval_hours: int(1,168)
   networks:
@@ -35,10 +47,21 @@ schema:
     - port
   active_probes: bool
   notify: bool
-  device_entities: bool
+  # Deprecated since 0.6.0: per-device sensors are no longer published. Kept so existing options stay valid.
+  device_entities: bool?
   ha_links: bool
   deep_scan: bool
   language: list(auto|en|it)
+  monitor_zigbee: bool
+  monitor_zwave: bool
+  monitor_matter: bool
+  monitor_bluetooth: bool
+  monitor_mqtt: bool
+  monitor_access: bool
+  zigbee2mqtt_in_zigbee: bool
+  health_interval_minutes: int(5,1440)
+  battery_threshold: int(1,60)
+  silent_hours: int(1,720)
   # Only for a broker other than the Mosquitto add-on: with Mosquitto the Supervisor provides the credentials.
   mqtt_host: str?
   mqtt_port: port?

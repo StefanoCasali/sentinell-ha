@@ -64,6 +64,15 @@ const ICONS = {
   eye: "M2 12s3.600-6.500 10-6.500S22 12 22 12s-3.600 6.500-10 6.500S2 12 2 12z M9.500 12a2.500 2.500 0 1 0 5 0 2.500 2.500 0 1 0-5 0",
   list: "M9 6h11 M9 12h11 M9 18h11 M4.500 6h.01 M4.500 12h.01 M4.500 18h.01",
   chevron: "M9 6l6 6-6 6",
+  lan: "M12 3v6 M5 15v-3h14v3 M12 9v3 M3 15h4v5H3z M10 15h4v5h-4z M17 15h4v5h-4z M10 3h4v0",
+  zigbee: "M5 6h14L5 18h14",
+  zwave: "M2.500 12c2.300-5 4.700-5 7 0s4.700 5 7 0c1.200-2.500 2.300-3.700 5-3.700",
+  matter: "M12 4.500 4.500 18h15z M12 4.500v6.500 M4.500 18l7.500-7 7.500 7",
+  bluetooth: "M7 7.500l10 9-5 4.500V3l5 4.500-10 9",
+  mqtt: "M5 19h.01 M5 13a6 6 0 0 1 6 6 M5 7a12 12 0 0 1 12 12 M5 3.500a15.500 15.500 0 0 1 15.500 15.500",
+  battery: "M3 8h15v8H3z M21 11v2 M6 11v2",
+  access: "M6 11h12v9H6z M8.500 11V8a3.500 3.500 0 0 1 7 0v3 M12 14.500v2",
+  open: "M14 4h6v6 M20 4l-9 9 M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
 };
 function icon(name) {
   return s("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8",
@@ -81,6 +90,8 @@ let showClosed = false;
 let devQuery = "";
 let devType = "";
 let devFilter = "all";
+let section = "lan";
+let smartFilter = "all";
 const openRows = new Set();
 
 async function api(path, body) {
@@ -133,9 +144,23 @@ function deviceLabel(d) {
   return d ? (d.name || info.friendly_name || d.hostname || info.model || d.vendor || d.ip) : "";
 }
 const openFindings = (key) => state.findings.filter((f) => f.device_key === key && f.status === "open");
+// Ogni rete è una sezione: problemi e incidenti senza rete appartengono alla rete locale.
+const netOf = (x) => x.network || "lan";
+const secFindings = () => state.findings.filter((f) => netOf(f) === section);
+const secIncidents = () => state.incidents.filter((i) => netOf(i) === section);
+const networks = () => (state.smarthome ? state.smarthome.networks : []);
+// Gli accessi a Home Assistant sono una sezione come le reti: i "dispositivi" sono gli indirizzi di provenienza.
+function accessNet() {
+  const a = state.access;
+  return a ? { key: "access", label: T("Accessi", "Access"), access: a, devices: a.sources, summary: { total: a.sources.length } } : null;
+}
+const currentNet = () => (section === "access" ? accessNet() : networks().find((n) => n.key === section));
+const smartFindings = (id) => state.findings.filter((f) => f.status === "open" && f.ha_device && f.ha_device.id === id);
 function worst(findings) {
   return findings.reduce((best, f) => (best === null || SEV_RANK[f.severity] < SEV_RANK[best] ? f.severity : best), null);
 }
+
+const factList = (facts) => h("dl", { class: "facts" }, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
 
 // Riga espandibile che ricorda se era aperta tra un aggiornamento e l'altro.
 function row(id, cls, summary, body) {
@@ -161,10 +186,9 @@ function hash(text) {
   return x >>> 0;
 }
 
-function radar() {
-  const online = state.devices.filter((d) => d.online);
+function radar(nodes, center, label, emptyText) {
   const svg = s("svg", { viewBox: "0 0 400 400", class: "radar" + (state.status.running ? " scanning" : ""), role: "img",
-    "aria-label": T(`Radar della rete: ${online.length} dispositivi accesi`, `Network radar: ${online.length} devices online`) },
+    "aria-label": label },
     s("defs", {}, s("radialGradient", { id: "radar-bg" },
       s("stop", { offset: "0", "stop-color": "#1b3260" }), s("stop", { offset: "1", "stop-color": "#0a1428" }))),
     s("circle", { class: "disc", cx: 200, cy: 200, r: 199 }),
@@ -174,62 +198,113 @@ function radar() {
     s("g", { class: "sweep" },
       s("path", { d: "M200 200 L200 14 A186 186 0 0 1 342.500 80.400 Z", fill: "rgba(62,214,160,.16)" }),
       s("line", { x1: 200, y1: 200, x2: 342.5, y2: 80.4, stroke: "rgba(62,214,160,.9)", "stroke-width": 2 })));
-
-  if (!online.length) {
-    svg.append(s("text", { class: "empty", x: 200, y: 206 }, T("Nessun dispositivo ancora", "No devices yet")));
+  if (!nodes.length && !center) {
+    svg.append(s("text", { class: "empty", x: 200, y: 206 }, emptyText));
     return svg;
   }
-  for (const d of online) {
-    const title = s("title", {}, `${deviceLabel(d)} - ${d.ip}`);
-    const open = () => focusDevice(d.key);
-    if (d.is_gateway) {
-      svg.append(s("rect", { class: "home", x: 189, y: 189, width: 22, height: 22, rx: 6, onclick: open }, title));
-      continue;
-    }
-    // Vicino al centro i dispositivi fidati, sul perimetro quelli ancora da classificare.
-    const [lo, hi] = d.trusted ? [44, 112] : [134, 178];
-    const angle = (hash(d.key) % 3600) / 10 * Math.PI / 180;
-    const dist = lo + (hash(d.key + "r") % 1000) / 1000 * (hi - lo);
+  if (center) {
+    svg.append(s("rect", { class: "home", x: 189, y: 189, width: 22, height: 22, rx: 6, onclick: center.run },
+      s("title", {}, center.title)));
+  }
+  for (const n of nodes) {
+    // Vicino al centro ciò che è a posto, sul perimetro ciò che chiede attenzione.
+    const [lo, hi] = n.inner ? [44, 112] : [134, 178];
+    const angle = (hash(n.key) % 3600) / 10 * Math.PI / 180;
+    const dist = lo + (hash(n.key + "r") % 1000) / 1000 * (hi - lo);
     const cx = 200 + dist * Math.cos(angle), cy = 200 + dist * Math.sin(angle);
-    const sev = worst(openFindings(d.key));
-    const cls = sev === "critical" || sev === "high" ? "bad" : sev === "medium" ? "warn" : d.trusted ? "ok" : "new";
-    if (d.needs_review) svg.append(s("circle", { class: "pulse", cx, cy, r: 7 }));
-    svg.append(s("circle", { class: "blip " + cls, cx, cy, r: cls === "bad" ? 8 : 6.5, onclick: open }, title));
+    if (n.pulse) svg.append(s("circle", { class: "pulse", cx, cy, r: 7 }));
+    svg.append(s("circle", { class: "blip " + n.cls, cx, cy, r: n.cls === "bad" ? 8 : 6.5, onclick: n.run },
+      s("title", {}, n.title)));
   }
   return svg;
+}
+
+function lanRadar() {
+  const online = state.devices.filter((d) => d.online);
+  const gateway = online.find((d) => d.is_gateway);
+  const nodes = online.filter((d) => !d.is_gateway).map((d) => {
+    const sev = worst(openFindings(d.key));
+    return { key: d.key, title: `${deviceLabel(d)} - ${d.ip}`, inner: d.trusted, pulse: d.needs_review,
+      cls: sev === "critical" || sev === "high" ? "bad" : sev === "medium" ? "warn" : d.trusted ? "ok" : "new",
+      run: () => focusDevice(d.key) };
+  });
+  return radar(nodes, gateway ? { title: `${deviceLabel(gateway)} - ${gateway.ip}`, run: () => focusDevice(gateway.key) } : null,
+    T(`Radar della rete: ${online.length} dispositivi accesi`, `Network radar: ${online.length} devices online`),
+    T("Nessun dispositivo ancora", "No devices yet"));
+}
+
+function netRadar(net) {
+  if (net.access) {
+    const sources = net.devices.map((x) => ({ key: x.ip, inner: !x.external, cls: x.banned || x.count >= 5 ? "bad" : "warn",
+      title: `${x.ip} - ${N(x.count, "tentativo", "tentativi", "attempt", "attempts")}`, run: () => go("devices", "a:" + x.ip) }));
+    return radar(sources, { title: "Home Assistant", run: () => go("devices") },
+      T(`Accessi: ${sources.length} indirizzi con tentativi falliti`, `Access: ${sources.length} addresses with failed attempts`), "");
+  }
+  const nodes = net.devices.map((d) => {
+    const bad = d.offline || d.silent, warn = d.battery_low || d.weak;
+    return { key: d.id, title: d.name, inner: !bad && !warn, cls: bad ? "bad" : warn ? "warn" : "ok",
+      run: () => focusSmart(d.id) };
+  });
+  return radar(nodes, net.devices.length ? { title: "Home Assistant", run: () => go("devices") } : null,
+    T(`Rete ${net.label}: ${net.devices.length} dispositivi`, `${net.label} network: ${net.devices.length} devices`),
+    T("Nessun dispositivo", "No devices"));
 }
 
 // ---------------------------------------------------------------- hero
 
 function verdict() {
-  const c = state.counts;
-  const grave = c.critical + c.high;
-  const pending = state.incidents.filter((i) => !i.acknowledged).length;
+  const net = currentNet();
+  const open = secFindings().filter((f) => f.status === "open");
+  const grave = open.filter((f) => SEV_RANK[f.severity] <= 1).length;
+  const medium = open.filter((f) => f.severity === "medium").length;
+  const pending = secIncidents().filter((i) => !i.acknowledged).length;
   if (state.status.running) {
     return { title: (state.status.phase || T("Scansione in corso", "Scan in progress")) + "...",
       sub: T("Sto controllando la rete: i risultati compaiono qui appena pronti.",
         "Checking the network: results will appear here as soon as they are ready.") };
   }
-  if (!state.scans.length) {
+  if (section === "lan" && !state.scans.length) {
     return { title: T("Pronta a controllare la tua rete", "Ready to check your network"),
       sub: T("La prima scansione elenca i dispositivi collegati e cerca i servizi a rischio. Richiede un paio di minuti.",
         "The first scan lists the connected devices and looks for risky services. It takes a couple of minutes.") };
   }
+  if (net && net.access && !net.access.read_at) {
+    return { title: T("Non ho ancora letto il log di Home Assistant", "The Home Assistant log has not been read yet"),
+      sub: net.access.error || T("Il primo controllo parte con la prossima scansione.", "The first check runs with the next scan.") };
+  }
+  if (net && net.access && !net.devices.length && !open.length && !pending) {
+    return { title: T("Nessun tentativo di accesso sospetto", "No suspicious login attempts"),
+      sub: T("Nelle ultime 24 ore Home Assistant non ha registrato richieste con credenziali non valide.",
+        "In the last 24 hours Home Assistant recorded no requests with invalid credentials.") };
+  }
+  if (net && !net.access && !net.devices.length) {
+    return { title: T(`Nessun dispositivo ${net.label} trovato`, `No ${net.label} devices found`),
+      sub: state.smarthome.read_at
+        ? T(`Leggo i dispositivi da Home Assistant: appena un'integrazione ${net.label} ne aggiunge uno, compare qui.`,
+          `Devices are read from Home Assistant: as soon as a ${net.label} integration adds one, it shows up here.`)
+        : T("Il registro di Home Assistant non è ancora stato letto: avvia una scansione.",
+          "The Home Assistant registry has not been read yet: start a scan.") };
+  }
   const parts = [];
   if (grave) parts.push(N(grave, "problema grave", "problemi gravi", "serious finding", "serious findings"));
   if (pending) parts.push(N(pending, "incidente da verificare", "incidenti da verificare", "incident to review", "incidents to review"));
-  if (c.medium) parts.push(N(c.medium, "problema medio", "problemi medi", "medium finding", "medium findings"));
-  const title = grave || pending ? T("La rete richiede attenzione", "Your network needs attention")
-    : c.medium ? T("Qualche punto da sistemare", "A few things to tidy up")
-      : T("La rete è in ordine", "Your network looks good");
+  if (medium) parts.push(N(medium, "problema medio", "problemi medi", "medium finding", "medium findings"));
+  const low = open.length - grave - medium;
+  if (net && low) parts.push(N(low, "avviso minore", "avvisi minori", "minor notice", "minor notices"));
+  const name = !net ? T("La rete", "Your network")
+    : net.access ? T("L'accesso a Home Assistant", "Access to Home Assistant")
+      : T(`La rete ${net.label}`, `Your ${net.label} network`);
+  const title = grave || pending ? T(`${name} richiede attenzione`, `${name} needs attention`)
+    : medium ? T("Qualche punto da sistemare", "A few things to tidy up")
+      : T(`${name} è in ordine`, `${name} looks good`);
   return { title, sub: parts.length ? parts.join(", ") + "."
     : T("Nessun problema aperto e nessun incidente da verificare.", "No open findings and no incidents to review.") };
 }
 
 function todoItems() {
-  if (!state.scans.length || state.status.running) return [];
+  if (state.status.running || (section === "lan" && !state.scans.length)) return [];
   const items = [];
-  const pending = state.incidents.filter((i) => !i.acknowledged);
+  const pending = secIncidents().filter((i) => !i.acknowledged);
   if (pending.length) {
     items.push({ sev: pending[0].severity, icon: "eye", title: pending[0].title,
       sub: pending.length === 1 ? T("Incidente da verificare", "Incident to review")
@@ -237,12 +312,14 @@ function todoItems() {
           : T(`e altri ${pending.length - 1} incidenti da verificare`, `and ${pending.length - 1} more incidents to review`),
       run: () => go("incidents") });
   }
-  for (const f of state.findings.filter((x) => x.status === "open" && SEV_RANK[x.severity] <= 2)) {
+  const limit = section === "lan" ? 2 : 3;
+  for (const f of secFindings().filter((x) => x.status === "open" && SEV_RANK[x.severity] <= limit)) {
     if (items.length >= 3) break;
     const dev = state.devices.find((d) => d.key === f.device_key);
-    items.push({ sev: f.severity, icon: "alert", title: f.title, sub: dev ? deviceLabel(dev) : "Router",
-      run: () => go("findings", "f:" + f.id) });
+    items.push({ sev: f.severity, icon: f.id.startsWith("sh:battery") ? "battery" : "alert", title: f.title,
+      sub: f.ha_device ? f.ha_device.name : dev ? deviceLabel(dev) : "Router", run: () => go("findings", "f:" + f.id) });
   }
+  if (section !== "lan") return items;
   const unknown = state.devices.filter((d) => d.online && !d.trusted).length;
   if (unknown && items.length < 3) {
     items.push({ sev: "info", icon: "list",
@@ -260,23 +337,52 @@ function todoItems() {
   return items;
 }
 
+function heroStats() {
+  const net = currentNet();
+  if (net && net.access) {
+    const a = net.access;
+    if (!a.read_at) return null;
+    return h("div", { class: "stats" },
+      h("span", {}, h("b", {}, a.attempts_24h), " ", T("tentativi falliti in 24 ore", "failed attempts in 24 hours")),
+      h("span", {}, h("b", {}, a.external_24h), " ", T("da Internet", "from the Internet")),
+      h("span", {}, h("b", {}, a.banned.length), " ", T("indirizzi bloccati", "banned addresses")),
+      h("span", {}, T("Ultimo controllo ", "Last check "), h("b", {}, fmt(a.read_at))));
+  }
+  if (net) {
+    const sum = net.summary;
+    if (!sum.total) return null;
+    return h("div", { class: "stats" },
+      h("span", {}, h("b", {}, sum.total), " ", T("dispositivi", "devices")),
+      h("span", {}, h("b", {}, sum.unreachable + sum.silent), " ", T("non comunicano", "not communicating")),
+      sum.battery_powered ? h("span", {}, h("b", {}, `${sum.low_battery}/${sum.battery_powered}`), " ", T("batterie scariche", "low batteries")) : null,
+      h("span", {}, T("Ultimo controllo ", "Last check "), h("b", {}, fmt(state.smarthome.read_at))));
+  }
+  const last = state.scans[state.scans.length - 1];
+  if (!last) return null;
+  return h("div", { class: "stats" },
+    h("span", {}, T("Punteggio ", "Score "), h("b", {}, state.score), "/100"),
+    h("span", {}, h("b", {}, state.devices.filter((d) => d.online).length), " ", T("dispositivi in rete", "devices online")),
+    h("span", {}, T("Ultima scansione ", "Last scan "), h("b", {}, fmt(last.ts))),
+    state.status.next_scan ? h("span", {}, T("Prossima ", "Next "), h("b", {}, fmt(state.status.next_scan))) : null);
+}
+
 function renderHero() {
   const v = verdict();
-  const online = state.devices.filter((d) => d.online);
-  const last = state.scans[state.scans.length - 1];
+  const net = currentNet();
   const todo = todoItems();
-  const stats = last ? h("div", { class: "stats" },
-    h("span", {}, T("Punteggio ", "Score "), h("b", {}, state.score), "/100"),
-    h("span", {}, h("b", {}, online.length), " ", T("dispositivi in rete", "devices online")),
-    h("span", {}, T("Ultima scansione ", "Last scan "), h("b", {}, fmt(last.ts))),
-    state.status.next_scan ? h("span", {}, T("Prossima ", "Next "), h("b", {}, fmt(state.status.next_scan))) : null) : null;
+  const legend = net && net.access
+    ? [["warn", T("pochi tentativi", "a few attempts")], ["bad", T("molti tentativi o bloccato", "many attempts or banned")]]
+    : net
+    ? [["ok", T("funziona", "working")], ["warn", T("batteria o segnale", "battery or signal")],
+      ["bad", T("non comunica", "not communicating")]]
+    : [["ok", T("fidato, nessun problema", "trusted, no findings")], ["warn", T("da sistemare", "needs fixing")],
+      ["bad", T("grave", "serious")], ["new", T("da classificare (anello esterno)", "to classify (outer ring)")]];
+  const hasNodes = net ? net.devices.length : state.devices.some((d) => d.online);
   $("hero").replaceChildren(
-    h("div", { class: "radar-wrap" }, radar(),
-      online.length ? h("div", { class: "legend" },
-        h("span", {}, h("i", { class: "dot ok" }), T("fidato, nessun problema", "trusted, no findings")),
-        h("span", {}, h("i", { class: "dot warn" }), T("da sistemare", "needs fixing")),
-        h("span", {}, h("i", { class: "dot bad" }), T("grave", "serious")),
-        h("span", {}, h("i", { class: "dot new" }), T("da classificare (anello esterno)", "to classify (outer ring)"))) : null),
+    h("div", { class: "radar-wrap" }, net ? netRadar(net) : lanRadar(),
+      hasNodes ? h("div", { class: "legend" }, legend.map(([cls, text]) => h("span", {}, h("i", { class: "dot " + cls }), text)),
+        net ? h("span", {}, net.access ? T("anello esterno: da Internet", "outer ring: from the Internet")
+          : T("anello esterno: richiede attenzione", "outer ring: needs attention")) : null) : null),
     h("div", {},
       h("h2", { class: "verdict" }, v.title),
       h("p", { class: "verdict-sub" }, v.sub),
@@ -287,8 +393,8 @@ function renderHero() {
           h("span", { class: "sev-mark " + item.sev }, icon(item.icon)),
           h("span", { class: "what" }, h("b", {}, item.title), h("span", { class: "small muted" }, item.sub)),
           chevron())))) : null,
-      stats,
-      !state.scans.length && !state.status.running ? h("div", { class: "hero-actions" },
+      heroStats(),
+      section === "lan" && !state.scans.length && !state.status.running ? h("div", { class: "hero-actions" },
         h("button", { class: "btn primary", onclick: startScan }, T("Avvia la prima scansione", "Start the first scan"))) : null));
 
   const btn = $("scan");
@@ -305,7 +411,8 @@ const startScan = () => act("api/scan", {});
 function findingRow(f) {
   const dev = state.devices.find((d) => d.key === f.device_key);
   const portText = f.port && f.category !== "router" ? T(", porta ", ", port ") + f.port : "";
-  const where = dev ? `${deviceLabel(dev)} (${dev.ip})${portText}` : (f.category === "router" ? "Router" : f.ip || "");
+  const where = f.ha_device ? f.ha_device.name
+    : dev ? `${deviceLabel(dev)} (${dev.ip})${portText}` : (f.category === "router" ? "Router" : f.ip || "");
   const closed = f.status !== "open";
   const buttons = [];
   if (f.status === "open") {
@@ -324,6 +431,7 @@ function findingRow(f) {
         T("Segnato come fidato", "Marked as trusted")) }, T("Lo riconosco, è fidato", "I recognise it, it's trusted")));
     }
     if (dev) buttons.push(h("button", { class: "btn small", onclick: () => focusDevice(dev.key) }, T("Vedi il dispositivo", "View the device")));
+    if (f.ha_device && f.ha_device.id) buttons.push(h("button", { class: "btn small", onclick: () => focusSmart(f.ha_device.id) }, T("Vedi il dispositivo", "View the device")));
     buttons.push(h("button", { class: "btn small", onclick: () => act("api/finding", { id: f.id, status: "ignored" },
       T("Problema ignorato", "Finding ignored")) }, T("Ignora", "Ignore")));
   } else if (f.status === "ignored") {
@@ -331,7 +439,7 @@ function findingRow(f) {
       T("Problema riaperto", "Finding reopened")) }, T("Riapri", "Reopen")));
   }
   return row("f:" + f.id, closed ? "dim" : "", [
-    h("span", { class: "sev-mark " + f.severity }, icon(SEV_RANK[f.severity] <= 1 ? "alert" : "note")),
+    h("span", { class: "sev-mark " + f.severity }, icon(f.id.startsWith("sh:battery") ? "battery" : SEV_RANK[f.severity] <= 1 ? "alert" : "note")),
     h("span", { class: "main" }, h("div", { class: "title" }, f.title), h("div", { class: "sub" }, where)),
     h("span", { class: "tags" },
       closed ? h("span", { class: "pill plain" }, f.status === "ignored" ? T("Ignorato", "Ignored") : T("Risolto", "Resolved"))
@@ -345,8 +453,8 @@ function findingRow(f) {
 }
 
 function renderFindings() {
-  const open = state.findings.filter((f) => f.status === "open");
-  const closed = state.findings.filter((f) => f.status !== "open");
+  const open = secFindings().filter((f) => f.status === "open");
+  const closed = secFindings().filter((f) => f.status !== "open");
   const out = [h("div", { class: "toolbar" }, h("div", { class: "chips" },
     h("button", { class: "chip", "aria-pressed": String(!showClosed), onclick: () => { showClosed = false; render(); } },
       T(`Aperti (${open.length})`, `Open (${open.length})`)),
@@ -357,6 +465,9 @@ function renderFindings() {
     out.push(h("div", { class: "panel empty" }, showClosed
       ? [h("b", {}, T("Niente in archivio", "Nothing archived")), T("Qui finiscono i problemi che ignori o che la scansione non trova più.",
         "Findings you ignore, or that the scan no longer detects, end up here.")]
+      : section !== "lan" ? [h("b", {}, T("Nessun problema aperto", "No open findings")),
+        T("Qui compaiono dispositivi che non comunicano, batterie in esaurimento, segnale debole e aggiornamenti.",
+          "Devices not communicating, low batteries, weak signal and updates appear here.")]
       : state.scans.length
         ? [h("b", {}, T("Nessun problema aperto", "No open findings")), T("Controlla anche le verifiche manuali nella scheda Router.",
           "Also go through the manual checks in the Router tab.")]
@@ -370,19 +481,23 @@ function renderFindings() {
 // ---------------------------------------------------------------- incidenti
 
 function renderIncidents() {
-  if (!state.incidents.length) {
-    return [h("div", { class: "panel empty" }, h("b", {}, T("Nessun incidente", "No incidents")), T(
+  const all = secIncidents();
+  if (!all.length) {
+    return [h("div", { class: "panel empty" }, h("b", {}, T("Nessun incidente", "No incidents")), section === "lan" ? T(
       "Qui compaiono i cambiamenti sospetti tra una scansione e l'altra: nuovi dispositivi, nuove porte, nuove aperture verso Internet.",
-      "Suspicious changes between one scan and the next appear here: new devices, new ports, new forwards to the Internet."))];
+      "Suspicious changes between one scan and the next appear here: new devices, new ports, new forwards to the Internet.")
+      : T("Qui compaiono i cambiamenti tra un controllo e l'altro: nuovi dispositivi, dispositivi che smettono di rispondere, cali di batteria.",
+        "Changes between one check and the next appear here: new devices, devices that stop responding, battery drops."))];
   }
-  const pending = state.incidents.filter((i) => !i.acknowledged);
+  const pending = all.filter((i) => !i.acknowledged);
   const out = [];
   if (pending.length > 1) {
     out.push(h("div", { class: "toolbar" }, h("button", { class: "btn small",
-      onclick: () => act("api/incident", { all: true }, T("Incidenti segnati come verificati", "Incidents marked as reviewed")) },
+      onclick: async () => { for (const i of pending) await api("api/incident", { id: i.id }).catch(() => {});
+        toast(T("Incidenti segnati come verificati", "Incidents marked as reviewed")); refresh(true); } },
       T(`Segna tutti come verificati (${pending.length})`, `Mark all as reviewed (${pending.length})`))));
   }
-  out.push(h("div", { class: "panel" }, state.incidents.map((i) => {
+  out.push(h("div", { class: "panel" }, all.map((i) => {
     if (!i.acknowledged && !openRows.has("i-seen:" + i.id)) { openRows.add("i:" + i.id); openRows.add("i-seen:" + i.id); }
     return row("i:" + i.id, i.acknowledged ? "dim" : "", [
       h("span", { class: "sev-mark " + (i.acknowledged ? "info" : i.severity) }, icon("eye")),
@@ -397,7 +512,9 @@ function renderIncidents() {
           onclick: () => act("api/incident", { id: i.id }, T("Incidente segnato come verificato", "Incident marked as reviewed")) },
           T("Ho verificato", "I have reviewed it")),
         i.device_key && state.devices.some((d) => d.key === i.device_key)
-          ? h("button", { class: "btn small", onclick: () => focusDevice(i.device_key) }, T("Vedi il dispositivo", "View the device")) : null),
+          ? h("button", { class: "btn small", onclick: () => focusDevice(i.device_key) }, T("Vedi il dispositivo", "View the device")) : null,
+        i.ha_device && (currentNet() || { devices: [] }).devices.some((d) => d.id === i.ha_device)
+          ? h("button", { class: "btn small", onclick: () => focusSmart(i.ha_device) }, T("Vedi il dispositivo", "View the device")) : null),
     ]);
   })));
   return out;
@@ -406,6 +523,7 @@ function renderIncidents() {
 // ---------------------------------------------------------------- dispositivi
 
 function focusDevice(key) {
+  section = "lan";
   devQuery = ""; devType = ""; devFilter = "all";
   go("devices", "d:" + key);
 }
@@ -535,7 +653,119 @@ function deviceList() {
   return out;
 }
 
+function focusSmart(id) {
+  const owner = networks().find((n) => n.devices.some((d) => d.id === id));
+  if (owner) section = owner.key;
+  devQuery = ""; smartFilter = "all";
+  go("devices", "s:" + id);
+}
+
+function smartRow(d) {
+  const findings = smartFindings(d.id);
+  const signal = d.lqi != null ? `LQI ${Math.round(d.lqi)}` : d.rssi != null ? `${Math.round(d.rssi)} dBm` : "";
+  const facts = [
+    [T("Produttore", "Vendor"), d.manufacturer], [T("Modello", "Model"), d.model], [T("Area", "Area"), d.area],
+    [T("Integrazioni", "Integrations"), (d.integrations || []).join(", ")],
+    [T("Batteria", "Battery"), d.battery != null ? `${Math.round(d.battery)}%` : d.battery_low ? T("scarica", "low") : ""],
+    [T("Segnale", "Signal"), signal],
+    [T("Ultima comunicazione", "Last report"), d.seen ? fmt(d.seen) : ""],
+    [T("Entità", "Entities"), d.entities],
+    [T("Visto la prima volta", "First seen"), fmt(d.first_seen)],
+  ].filter((x) => x[1]);
+  const down = d.offline || d.silent;
+  return row("s:" + d.id, d.offline ? "dim" : "", [
+    h("span", { class: "type-icon" + (d.offline ? " off" : "") }, icon(d.network)),
+    h("span", { class: "main" }, h("div", { class: "title" }, d.name),
+      h("div", { class: "sub" }, [d.model, d.area].filter(Boolean).join(", ") || d.manufacturer || "")),
+    h("span", { class: "tags" },
+      d.offline ? h("span", { class: "pill high" }, T("Non risponde", "Not responding")) : null,
+      d.silent ? h("span", { class: "pill medium" }, T("Non comunica", "Not reporting")) : null,
+      d.battery != null ? h("span", { class: "pill " + (d.battery_low ? (d.battery <= 5 ? "critical" : "medium") : "plain") },
+        `${Math.round(d.battery)}%`) : d.battery_low ? h("span", { class: "pill medium" }, T("Batteria", "Battery")) : null,
+      d.weak ? h("span", { class: "pill low optional" }, T("Segnale debole", "Weak signal")) : null,
+      d.update ? h("span", { class: "pill low optional" }, T("Aggiornamento", "Update")) : null,
+      d.bridge ? h("span", { class: "pill plain optional" }, T("Coordinatore", "Coordinator")) : null,
+      h("i", { class: "status-dot" + (down ? "" : " on"), title: down ? T("Non comunica", "Not communicating") : T("Funziona", "Working") })),
+  ], [
+    h("div", { class: "actions" },
+      // Il pannello è in un iframe: il collegamento apre la pagina del dispositivo nella finestra principale.
+      h("a", { class: "btn small", href: "/config/devices/device/" + encodeURIComponent(d.id), target: "_top" },
+        T("Apri in Home Assistant", "Open in Home Assistant")),
+      findings.map((f) => h("button", { class: "btn small", onclick: () => go("findings", "f:" + f.id) },
+        h("span", { class: "pill " + f.severity }, sevLabel(f.severity)), f.title))),
+    factList(facts),
+  ]);
+}
+
+function smartList(net) {
+  const q = devQuery.trim().toLowerCase();
+  const shown = net.devices.filter((d) => {
+    if (smartFilter === "issues" && !smartFindings(d.id).length) return false;
+    if (smartFilter === "battery" && !d.battery_low) return false;
+    if (smartFilter === "down" && !(d.offline || d.silent)) return false;
+    return !q || [d.name, d.model, d.manufacturer, d.area].some((v) => v && String(v).toLowerCase().includes(q));
+  });
+  if (!shown.length) {
+    return [h("div", { class: "panel empty" }, h("b", {}, T("Nessun dispositivo corrisponde", "No device matches")),
+      T("Prova a cambiare ricerca o filtri.", "Try changing the search or the filters."))];
+  }
+  return [h("div", { class: "group-title" }, N(shown.length, "dispositivo", "dispositivi", "device", "devices")),
+    h("div", { class: "panel" }, shown.map(smartRow))];
+}
+
+function renderSmartDevices(net) {
+  if (!net.devices.length) {
+    return [h("div", { class: "panel empty" }, h("b", {}, T(`Nessun dispositivo ${net.label}`, `No ${net.label} devices`)),
+      T("Compaiono qui quando Home Assistant ne conosce almeno uno.", "They show up here once Home Assistant knows at least one."))];
+  }
+  const list = h("div", {}, smartList(net));
+  const search = h("input", { type: "search", value: devQuery, "aria-label": T("Cerca un dispositivo", "Search for a device"),
+    placeholder: T("Cerca per nome, modello, area", "Search by name, model, area") });
+  search.addEventListener("input", () => { devQuery = search.value; list.replaceChildren(...smartList(net)); });
+  const chip = (id, text) => h("button", { class: "chip", "aria-pressed": String(smartFilter === id),
+    onclick: () => { smartFilter = id; render(); } }, text);
+  return [
+    h("div", { class: "toolbar" }, search),
+    h("div", { class: "toolbar chips" }, chip("all", T("Tutti", "All")), chip("issues", T("Con problemi", "With findings")),
+      chip("down", T("Non comunicano", "Not communicating")), chip("battery", T("Batteria scarica", "Low battery"))),
+    list,
+  ];
+}
+
+function renderAttempts(a) {
+  if (!a.sources.length) {
+    return [h("div", { class: "panel empty" }, h("b", {}, T("Nessun tentativo nelle ultime 24 ore", "No attempts in the last 24 hours")),
+      a.read_at ? T("Qui compaiono gli indirizzi da cui arrivano richieste con credenziali non valide.",
+        "Addresses sending requests with invalid credentials appear here.")
+        : (a.error || T("Il log di Home Assistant non è ancora stato letto.", "The Home Assistant log has not been read yet.")))];
+  }
+  return [h("div", { class: "group-title" }, N(a.sources.length, "indirizzo di provenienza", "indirizzi di provenienza", "source address", "source addresses")),
+    h("div", { class: "panel" }, a.sources.map((x) => {
+      const dev = state.devices.find((d) => d.ip === x.ip);
+      return row("a:" + x.ip, "", [
+        h("span", { class: "sev-mark " + (x.banned || x.count >= 5 || x.external ? "high" : "medium") }, icon("access")),
+        h("span", { class: "main" }, h("div", { class: "title" }, x.device ? `${x.device} (${x.ip})` : x.ip),
+          h("div", { class: "sub" }, (x.external ? T("da Internet", "from the Internet") : T("dalla rete locale", "from the local network")) +
+            (x.host && x.host !== x.ip ? ", " + x.host : ""))),
+        h("span", { class: "tags" },
+          x.banned ? h("span", { class: "pill critical" }, T("Bloccato", "Banned")) : null,
+          h("span", { class: "pill " + (x.count >= 5 ? "high" : "medium") }, N(x.count, "tentativo", "tentativi", "attempt", "attempts"))),
+      ], [
+        factList([
+          [T("Ultimo tentativo", "Latest attempt"), x.last || fmt(x.last_seen)],
+          [T("Indirizzi richiesti", "Requested URLs"), x.urls.join(", ")],
+          [T("Client", "Client"), x.agents.join(" | ")],
+        ].filter((f) => f[1])),
+        dev ? h("div", { class: "actions" },
+          h("button", { class: "btn small", onclick: () => focusDevice(dev.key) }, T("Vedi il dispositivo", "View the device"))) : null,
+      ]);
+    }))];
+}
+
 function renderDevices() {
+  const net = currentNet();
+  if (net && net.access) return renderAttempts(net.access);
+  if (net) return renderSmartDevices(net);
   if (!state.devices.length) {
     return [h("div", { class: "panel empty" }, h("b", {}, T("Ancora nessun dispositivo", "No devices yet")),
       T("Avvia una scansione per vedere cosa è collegato alla rete.", "Start a scan to see what is connected to the network."))];
@@ -564,8 +794,6 @@ function renderDevices() {
 }
 
 // ---------------------------------------------------------------- router
-
-const factList = (facts) => h("dl", { class: "facts" }, facts.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
 
 function renderRouter() {
   const r = state.router || {};
@@ -658,18 +886,33 @@ function renderHistory() {
 const VIEWS = { findings: renderFindings, incidents: renderIncidents, devices: renderDevices,
   router: renderRouter, history: renderHistory };
 
+function renderSections() {
+  const alertFor = (key) => state.findings.some((f) => netOf(f) === key && f.status === "open" && SEV_RANK[f.severity] <= 2)
+    || state.incidents.some((i) => netOf(i) === key && !i.acknowledged);
+  const items = [["lan", T("Rete locale", "Local network"), state.devices.filter((d) => d.online).length],
+    ...networks().map((n) => [n.key, n.label, n.summary.total])];
+  if (state.access) items.push(["access", T("Accessi", "Access"), state.access.sources.length]);
+  $("sections").replaceChildren(...items.map(([key, label, count]) =>
+    h("button", { class: "section" + (count ? "" : " none"), "aria-pressed": String(section === key),
+      onclick: () => { section = key; tab = "findings"; devQuery = ""; render(); } },
+      icon(key), h("span", {}, label),
+      count ? h("span", { class: "count" + (alertFor(key) ? " alert" : "") }, count) : null)));
+}
+
 function renderTabs() {
-  const open = state.findings.filter((f) => f.status === "open");
+  const open = secFindings().filter((f) => f.status === "open");
   const grave = open.some((f) => SEV_RANK[f.severity] <= 1);
-  const pending = state.incidents.filter((i) => !i.acknowledged).length;
+  const pending = secIncidents().filter((i) => !i.acknowledged).length;
   const done = state.checklist.filter((i) => i.done).length;
+  const net = currentNet();
   const tabs = [
     ["findings", T("Problemi", "Findings"), open.length, grave],
     ["incidents", T("Incidenti", "Incidents"), pending, pending > 0],
-    ["devices", T("Dispositivi", "Devices"), state.devices.filter((d) => d.online).length, false],
-    ["router", "Router", `${done}/${state.checklist.length}`, false],
-    ["history", T("Stato", "Status"), null, false],
+    net && net.access ? ["devices", T("Tentativi", "Attempts"), net.access.attempts_24h, false]
+      : ["devices", T("Dispositivi", "Devices"), net ? net.summary.total : state.devices.filter((d) => d.online).length, false],
   ];
+  if (!net) tabs.push(["router", "Router", `${done}/${state.checklist.length}`, false], ["history", T("Stato", "Status"), null, false]);
+  if (!tabs.some(([id]) => id === tab)) tab = "findings";
   document.querySelector(".tabs").replaceChildren(...tabs.map(([id, text, count, alert]) =>
     h("button", { role: "tab", "aria-selected": String(tab === id), onclick: () => { tab = id; render(); } },
       text, count === null || count === 0 ? null : h("span", { class: "count" + (alert ? " alert" : "") }, count))));
@@ -677,6 +920,8 @@ function renderTabs() {
 
 function render() {
   if (!state) return;
+  if (section !== "lan" && !currentNet()) section = "lan";  // sezione spenta dalle opzioni
+  renderSections();
   renderHero();
   renderTabs();
   $("view").replaceChildren(...VIEWS[tab]());

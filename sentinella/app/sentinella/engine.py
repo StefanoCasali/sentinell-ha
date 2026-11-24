@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import discovery, enrich, entities, ha, halink, i18n, netinfo, portscan, probes, rules, upnp
+from . import accesslog, discovery, enrich, entities, ha, halink, i18n, netinfo, portscan, probes, rules, smarthome, upnp
 from .i18n import L, t
 from .store import Store
 
@@ -97,7 +97,9 @@ class Engine:
                 for entry in details.get(ip, []):
                     if entry["port"] in found_deep.get("ports", {}):
                         entry["info"]["product"] = found_deep["ports"][entry["port"]]
-        registry = halink.fetch() if self.options.get("ha_links", True) else None
+        wants_registry = self.options.get("ha_links", True) or self._smart_home()
+        registry = halink.fetch() if wants_registry else None
+        access_text = accesslog.fetch() if self.options.get("monitor_access", True) else None
 
         self.status["phase"] = t("Controllo del router", "Checking the router")
         router = upnp.snapshot()
@@ -141,7 +143,7 @@ class Engine:
                     if kept not in info and (dev.get("info") or {}).get(kept):
                         info[kept] = dev["info"][kept]
                 dev["info"] = info
-                if registry is not None:
+                if registry is not None and self.options.get("ha_links", True):
                     dev["ha"] = halink.match(dev, registry)
             online = [d for d in devices.values() if d["online"]]
             by_ip = {d["ip"]: d for d in online}
@@ -150,7 +152,19 @@ class Engine:
             for dev in online:
                 found.extend(rules.device_findings(dev, dev.get("needs_review", False)))
             found.extend(rules.router_findings(router, by_ip))
-            fresh = self._merge(found, {d["key"] for d in online}, now)
+            evaluated = {d["key"] for d in online}
+            sh_incidents = []
+            if registry is not None:  # anche con tutte le sezioni spente: così i loro problemi si chiudono
+                sh_found, sh_incidents = smarthome.update(data, registry, self.options, now)
+                found.extend(sh_found)
+                evaluated.add("smarthome")
+            if access_text is not None:
+                acc_found, acc_incidents = accesslog.update(data, access_text, now)
+                found.extend(acc_found)
+                sh_incidents = sh_incidents + acc_incidents
+                evaluated.add(accesslog.NETWORK)
+            self._close_disabled(data, evaluated)
+            fresh = self._merge(found, evaluated, now)
 
             new_router = {k: v for k, v in router.items() if k != "igd"}
             if router.get("igd"):
@@ -164,8 +178,9 @@ class Engine:
             if baseline_done:
                 incidents = self._detect_incidents(
                     now, fresh, new_keys, old_ports, old_maps, old_router, new_router)
-                data.setdefault("incidents", []).extend(incidents)
-                del data["incidents"][:-MAX_INCIDENTS]
+            incidents = incidents + sh_incidents
+            data.setdefault("incidents", []).extend(incidents)
+            del data["incidents"][:-MAX_INCIDENTS]
 
             data["router"] = new_router
             data["networks"] = [str(n) for n in nets]
@@ -192,7 +207,7 @@ class Engine:
             if fid in seen or f["status"] == "resolved":
                 continue
             # Un dispositivo spento non è un problema risolto: si chiude solo ciò che è stato ricontrollato.
-            if f["category"] == "router" or f.get("device_key") in evaluated:
+            if f["category"] == "router" or f.get("device_key") in evaluated or f.get("scope") in evaluated:
                 f.update(status="resolved", resolved_at=now)
         return fresh
 
@@ -277,7 +292,7 @@ class Engine:
 
         # Falle gravi comparse senza che sia cambiata una porta (es. un servizio che ora accetta chiunque).
         for fid, f in fresh_by_id.items():
-            if fid in covered or f["severity"] not in ("critical", "high"):
+            if fid in covered or f.get("scope") or f["severity"] not in ("critical", "high"):
                 continue
             add("new_vulnerability", f["severity"],
                 t("Nuova falla: {title}", "New vulnerability: {title}").format(title=f["title"]),
@@ -290,7 +305,7 @@ class Engine:
             ha.fire_event("sentinella_incident", {
                 "type": incident["type"], "severity": incident["severity"],
                 "title": incident["title"], "detail": incident["detail"],
-                "device": incident.get("device"), "ip": incident.get("ip"),
+                "device": incident.get("device"), "ip": incident.get("ip"), "network": incident.get("network") or "lan",
             })
         if self.options.get("notify", True):
             ha.notify([f"{i['title']}" + (f" ({i['device']})" if i.get("device") else "") for i in incidents])
@@ -318,11 +333,87 @@ class Engine:
                                if not self.store.data["checklist"].get(i["id"])]
                     status = {**self.status, "checklist_total": len(rules.ROUTER_CHECKLIST),
                               "checklist_missing": missing}
-                    items = entities.build(self.store.data, status, bool(self.options.get("device_entities", True)))
+                    items = entities.build(self.store.data, status, self.options)
+                    # Le entità che non esistono più (sezione spenta, rete rimasta senza dispositivi) vanno tolte.
+                    current = {e["id"]: e["domain"] for e in items}
+                    stale = {eid: domain for eid, domain in self.store.data.get("published", {}).items()
+                             if eid not in current}
                 ha.publish(items)
+                if ha.status["channel"] != "none" and not ha.status["error"]:
+                    for domain in set(stale.values()):
+                        ha.remove_many(domain, [eid for eid, d in stale.items() if d == domain])
+                    with self.store.lock:
+                        if self.store.data.get("published") != current:
+                            self.store.data["published"] = current
+                            self.store.save()
             except Exception as exc:
                 log.exception("Publishing to Home Assistant failed")
                 ha.status["error"] = t("errore interno: {e}", "internal error: {e}").format(e=exc)
+
+    def _close_disabled(self, data: dict, evaluated: set) -> None:
+        """Una sezione spenta dalle opzioni non deve lasciare problemi aperti né incidenti da verificare."""
+        active = set(smarthome.enabled_networks(self.options))
+        if self.options.get("monitor_access", True):
+            active.add(accesslog.NETWORK)
+        else:
+            evaluated.add(accesslog.NETWORK)
+        for incident in data.get("incidents", []):
+            if incident.get("network") and incident["network"] not in active:
+                incident["acknowledged"] = True
+
+    def _smart_home(self) -> bool:
+        return bool(smarthome.enabled_networks(self.options))
+
+    def health_check(self) -> None:
+        """Controllo rapido di domotica e accessi, tra una scansione di rete e l'altra."""
+        if self._scan_lock.locked():
+            return
+        registry = halink.fetch() if self._smart_home() else None
+        access_text = accesslog.fetch() if self.options.get("monitor_access", True) else None
+        if registry is None and access_text is None:
+            return
+        now = _now()
+        with self.store.lock:
+            data = self.store.data
+            found, incidents, evaluated = [], [], set()
+            if registry is not None:
+                sh_found, sh_incidents = smarthome.update(data, registry, self.options, now)
+                found += sh_found
+                incidents += sh_incidents
+                evaluated.add("smarthome")
+            if access_text is not None:
+                acc_found, acc_incidents = accesslog.update(data, access_text, now)
+                found += acc_found
+                incidents += acc_incidents
+                evaluated.add(accesslog.NETWORK)
+            self._close_disabled(data, evaluated)
+            self._merge(found, evaluated, now)
+            data.setdefault("incidents", []).extend(incidents)
+            del data["incidents"][:-MAX_INCIDENTS]
+            self.store.save()
+        self.publish()
+        self._announce(incidents)
+
+    def health_forever(self) -> None:
+        while True:
+            time.sleep(max(5, int(self.options.get("health_interval_minutes", 30))) * 60)
+            try:
+                self.health_check()
+            except Exception:
+                log.exception("Smart home check failed")
+
+    def cleanup_device_entities(self) -> None:
+        """Toglie da Home Assistant i sensori per singolo dispositivo creati dalle versioni precedenti."""
+        with self.store.lock:
+            if self.store.data.get("device_entities_removed"):
+                return
+            ids = [entities.device_entity_id(key) for key in self.store.data["devices"]]
+        if not ids or ha.remove_many("binary_sensor", ids):
+            with self.store.lock:
+                self.store.data["device_entities_removed"] = True
+                self.store.save()
+            if ids:
+                log.info("Removed %d per-device sensors published by earlier versions", len(ids))
 
     def publish_async(self) -> None:
         threading.Thread(target=self.publish, name="publish", daemon=True).start()
@@ -349,6 +440,7 @@ class Engine:
         if self.options.get("dev_skip_scan"):  # solo sviluppo: lascia intatti i dati di prova
             return
         time.sleep(5)
+        self.cleanup_device_entities()
         while True:
             self.scan()
             interval = max(1, int(self.options.get("scan_interval_hours", 6))) * 3600
@@ -394,8 +486,6 @@ class Engine:
             for fid in [i for i, f in data["findings"].items() if f.get("device_key") == key]:
                 del data["findings"][fid]
             self.store.save()
-        threading.Thread(target=ha.remove, args=("binary_sensor", entities.device_entity_id(key)),
-                         daemon=True).start()
         self.publish_async()
 
     def set_checklist(self, item_id: str, done: bool) -> None:
@@ -454,6 +544,8 @@ class Engine:
             return {
                 "status": dict(self.status),
                 "ha": {**ha.status, "links": dict(halink.status)},
+                "smarthome": smarthome.view(data),
+                "access": accesslog.view(data, _now()) if self.options.get("monitor_access", True) else None,
                 "types": {k: str(v) for k, v in enrich.TYPES.items()},
                 "counts": entities.counts(data),
                 "score": entities.score(data),

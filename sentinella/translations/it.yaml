@@ -15,8 +15,38 @@ configuration:
     name: Notifiche
     description: Crea una notifica in Home Assistant a ogni incidente di sicurezza.
   device_entities:
-    name: Un sensore per dispositivo
-    description: Crea un sensore binario "In rete" per ogni dispositivo trovato.
+    name: Un sensore per dispositivo (non più usato)
+    description: Deprecato. Dalla 0.6.0 vengono pubblicati solo sensori aggregati; quelli per dispositivo già creati vengono rimossi in automatico.
+  monitor_zigbee:
+    name: Monitora Zigbee
+    description: Sezione Zigbee (ZHA, Zigbee2MQTT, deCONZ) - dispositivi che non comunicano, batterie, segnale, aggiornamenti.
+  monitor_zwave:
+    name: Monitora Z-Wave
+    description: Sezione Z-Wave (Z-Wave JS).
+  monitor_matter:
+    name: Monitora Matter
+    description: Sezione Matter.
+  monitor_bluetooth:
+    name: Monitora Bluetooth
+    description: Sezione Bluetooth (BTHome, Xiaomi BLE, SwitchBot e altre integrazioni Bluetooth).
+  monitor_mqtt:
+    name: Monitora MQTT
+    description: Sezione MQTT - dispositivi che arrivano a Home Assistant tramite MQTT.
+  monitor_access:
+    name: Monitora gli accessi a Home Assistant
+    description: Sezione Accessi - tentativi di accesso falliti e indirizzi bloccati trovati nel log di Home Assistant.
+  zigbee2mqtt_in_zigbee:
+    name: Dispositivi Zigbee2MQTT sotto Zigbee
+    description: Attiva - i dispositivi Zigbee2MQTT compaiono solo nella sezione Zigbee e MQTT mostra tutto il resto. Spenta - vengono contati sotto MQTT. Un dispositivo non viene mai segnalato in entrambe.
+  health_interval_minutes:
+    name: Intervallo dei controlli sulla domotica (minuti)
+    description: Minuti tra un controllo della domotica e il successivo. Sono controlli leggeri, indipendenti dalla scansione di rete.
+  battery_threshold:
+    name: Soglia di batteria scarica (%)
+    description: Livello di batteria al di sotto del quale un dispositivo viene segnalato.
+  silent_hours:
+    name: Soglia di silenzio (ore)
+    description: Ore senza comunicazioni dopo le quali un dispositivo a batteria è considerato non più in comunicazione.
   ha_links:
     name: Collega i dispositivi alla domotica
     description: Cerca quali dispositivi ed entità di Home Assistant corrispondono già a ogni dispositivo di rete.

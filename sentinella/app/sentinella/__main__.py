@@ -13,6 +13,7 @@ def main() -> None:
     engine = Engine(Store(config.DATA_DIR), config.load_options())
     threading.Thread(target=engine.run_forever, name="scheduler", daemon=True).start()
     threading.Thread(target=engine.republish_forever, name="republish", daemon=True).start()
+    threading.Thread(target=engine.health_forever, name="health", daemon=True).start()
     serve(engine)
 
 

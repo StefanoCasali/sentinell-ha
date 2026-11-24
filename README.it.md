@@ -38,7 +38,9 @@ L'interfaccia è su http://127.0.0.1:8099. Stato e opzioni stanno in `sentinella
 | `portscan.py` | Scansione TCP delle porte |
 | `probes.py` | Verifiche non distruttive sui servizi |
 | `enrich.py` | Identificazione dei dispositivi: mDNS, SSDP, NetBIOS, nmap approfondito, tipo |
-| `halink.py` | Collegamento con dispositivi ed entità già presenti in Home Assistant |
+| `halink.py` | Legge da Home Assistant dispositivi, entità e il loro stato di salute |
+| `smarthome.py` | Analisi delle reti Zigbee, Z-Wave, Matter, Bluetooth e MQTT |
+| `accesslog.py` | Accessi falliti e indirizzi bloccati dal log di Home Assistant |
 | `upnp.py` | Lettura e chiusura delle aperture UPnP del router |
 | `rules.py` | Regole, testi dei rimedi, lista delle verifiche manuali |
 | `engine.py` | Scansione, stato dei problemi, incidenti, interventi |

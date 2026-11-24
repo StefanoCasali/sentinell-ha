@@ -39,6 +39,52 @@ A "not linked" device is simply on the network without any integration using it:
 
 The registry is read at every scan; the outcome is shown in the **Status** tab. Disable it with the `ha_links` option.
 
+## Smart home networks
+
+Besides the local network, Sentinella analyses the networks of your smart home. Each one is a separate section of the panel: **Zigbee** (ZHA, Zigbee2MQTT, deCONZ), **Z-Wave** (Z-Wave JS), **Matter**, **Bluetooth** and **MQTT**. Devices are not queried directly: Sentinella reads what Home Assistant already knows (devices, entities and their state), so nothing else needs to be installed. A section stays empty until Home Assistant has at least one device of that kind.
+
+Each section has its own checkbox in the add-on options (`monitor_zigbee`, `monitor_zwave`, `monitor_matter`, `monitor_bluetooth`, `monitor_mqtt`): turn off the ones you do not use. A section that is off disappears from the panel, its open findings are closed, its incidents are marked as reviewed and its sensors are removed from Home Assistant.
+
+A device belongs to exactly one section, so nothing is reported twice. Zigbee2MQTT devices technically reach Home Assistant through MQTT: with `zigbee2mqtt_in_zigbee` on (the default) they are shown under Zigbee and the MQTT section contains only what does not come from Zigbee2MQTT; with the option off they are counted under MQTT. The same rule applies to Z-Wave devices bridged over MQTT by Z-Wave JS UI.
+
+Every 30 minutes (option `health_interval_minutes`), independently of the network scan, it checks:
+
+| Check | When it is reported |
+|---|---|
+| Device unreachable | All its entities are unavailable, or the Z-Wave node is marked dead |
+| Coordinator not responding | The bridge or coordinator is unavailable (high severity: the whole network is down) |
+| Device no longer reporting | A battery-powered device has sent nothing for `silent_hours` (48 by default) |
+| Battery running low | Battery at or below `battery_threshold` (20% by default), or the device's own low-battery flag |
+| Weak signal | Zigbee link quality below 25, or signal below -88 dBm |
+| Firmware update available | Home Assistant offers an update for the device |
+| Zigbee pairing left open | Zigbee2MQTT is still accepting new devices |
+
+Changes between one check and the next become incidents: `new_device` (a device appears in a network), `device_offline` (a device stops responding), `network_outage` (most of a network goes down at once), `battery_drop` (30 points or more lost since the last check) and `device_removed`.
+
+Things to know:
+
+- "No longer reporting" is evaluated only for battery-powered devices: a mains-powered plug nobody uses can stay silent for days without anything being wrong.
+- After a Home Assistant restart the "last report" times start again from the restart.
+- Link quality and signal are checked only if the corresponding sensor is enabled in Home Assistant (Zigbee2MQTT disables `linkquality` by default).
+- Devices of other integrations (Wi-Fi, cloud) are not part of any section; they appear in the local network if they have an IP address.
+
+## Access to Home Assistant
+
+The **Access** section watches who tries to get into Home Assistant. At every check Sentinella reads the Home Assistant log through the Supervisor and looks for requests with invalid credentials and for addresses Home Assistant has banned.
+
+- Every source address with failed attempts becomes a `failed_login` incident: high severity if it comes from the Internet or if there are 5 or more attempts, medium otherwise. A local address is matched to the device found by the network scan, when known.
+- An address banned by Home Assistant becomes an `ip_banned` incident.
+- While there are failed attempts in the last 24 hours a finding stays open, with the steps to protect access (multi-factor authentication, `ip_ban_enabled`, no direct exposure of port 8123).
+- If the external URL configured in Home Assistant uses plain HTTP, a high finding is reported.
+
+Things to know:
+
+- This needs the add-on permission to read the Home Assistant log (`hassio_role: homeassistant`); Home Assistant shows it when you update. Turn the check off with the `monitor_access` option.
+- Only what is still in the log when the check runs is seen: on a very chatty installation old lines may scroll away between two checks.
+- Successful logins are not written to the log, so they cannot be reported.
+- Behind a reverse proxy without `use_x_forwarded_for` and `trusted_proxies`, every attempt appears to come from the proxy.
+
+
 ## Findings and incidents
 
 A **finding** is a state: it stays open as long as the scan detects it (or until you ignore it). An **incident** is a suspicious change between two scans and stays "to review" until you press **I have reviewed it**:
@@ -68,8 +114,8 @@ Without a broker the same entities are written through the Home Assistant API: t
 
 | Entity | Content |
 |---|---|
-| `sensor.sentinella_devices_online` | Devices powered on; list and count by type in the attributes |
-| `sensor.sentinella_devices_linked_to_the_smart_home` | Network devices already known to an integration; `not_linked` list in the attributes |
+| `sensor.sentinella_devices_online` | Devices powered on; count by type and trusted/untrusted in the attributes |
+| `sensor.sentinella_devices_linked_to_the_smart_home` | Network devices already known to an integration; `not_linked` count and integrations in the attributes |
 | `sensor.sentinella_known_devices` | Devices seen at least once |
 | `sensor.sentinella_untrusted_devices` | Online and not yet classified; list in the attributes |
 | `binary_sensor.sentinella_new_device_detected` | On while a new device is waiting to be classified |
@@ -87,13 +133,20 @@ Without a broker the same entities are written through the Home Assistant API: t
 | `sensor.sentinella_public_ip_address` | WAN address declared by the router |
 | `sensor.sentinella_manual_checks_completed` | Ticked items of the router checklist; missing ones in the attributes |
 | `sensor.sentinella_last_scan`, `_last_scan_duration`, `binary_sensor.sentinella_scan_in_progress` | Diagnostics |
-| `binary_sensor.<device>_online` | One per device: on or off, with IP, MAC, type, model, operating system, open ports, findings and the smart home references (`linked_to_home_assistant`, `ha_devices`, `ha_integrations`, `ha_entities`) |
+| `sensor.sentinella_<network>_devices` | One per smart home network with devices (`zigbee`, `z_wave`, `matter`, `bluetooth`, `mqtt`): total, with all the counts in the attributes |
+| `sensor.sentinella_<network>_not_communicating` | Unreachable or silent devices of that network; names in the attributes |
+| `sensor.sentinella_<network>_low_batteries` | Devices with a low battery; names and levels in the attributes |
+| `sensor.sentinella_<network>_open_findings` | Open findings of that network |
+| `binary_sensor.sentinella_<network>_needs_attention` | On if the network has devices not communicating, low batteries or open findings |
+| `sensor.sentinella_failed_logins_24h` | Failed login attempts to Home Assistant in the last 24 hours; split local/Internet and source addresses in the attributes |
+| `sensor.sentinella_banned_addresses` | Addresses banned by Home Assistant |
+| `binary_sensor.sentinella_login_attempts` | On while there are failed login attempts in the last 24 hours |
 
 Entity IDs above are those of an English installation over MQTT; in Italian they derive from the Italian entity name. Attribute keys are always in English and do not change with the language. With the API channel the IDs are fixed: `sensor.sentinella_<id>` (for example `sensor.sentinella_dispositivi_online`, `binary_sensor.sentinella_falle`, `binary_sensor.sentinella_dispositivo_<mac>`).
 
-Over MQTT the per-device sensors are attached, through the MAC, to the device already present in Home Assistant if another integration knows it. Turn them off with the `device_entities` option.
+Only aggregate sensors are published: there is no entity per device. The per-device "Online" sensors created by versions before 0.6.0 are removed automatically at the first start. Attributes list by name only the devices that need action (untrusted, not communicating, low battery).
 
-Every incident also fires the `sentinella_incident` event (fields `type`, `severity`, `title`, `detail`, `device`, `ip`), handy as a trigger:
+Every incident also fires the `sentinella_incident` event (fields `type`, `severity`, `title`, `detail`, `device`, `ip`, `network`), handy as a trigger:
 
 ```yaml
 automation:
@@ -124,7 +177,12 @@ automation:
 | `extra_ports` | empty | Additional ports to check |
 | `active_probes` | on | Verify whether services accept access without a password |
 | `notify` | on | Home Assistant notification for every incident |
-| `device_entities` | on | Create an "Online" sensor for every device |
+| `monitor_zigbee`, `monitor_zwave`, `monitor_matter`, `monitor_bluetooth`, `monitor_mqtt` | on | One checkbox per smart home section: turn off the networks you do not have |
+| `monitor_access` | on | Access section: failed logins and banned addresses from the Home Assistant log |
+| `zigbee2mqtt_in_zigbee` | on | Zigbee2MQTT devices appear under Zigbee (on) or under MQTT (off), never in both |
+| `health_interval_minutes` | 30 | Minutes between one smart home and access check and the next |
+| `battery_threshold` | 20 | Battery percentage at or below which a device is reported |
+| `silent_hours` | 48 | Hours of silence after which a battery-powered device is reported |
 | `ha_links` | on | Look up devices and entities already linked in Home Assistant |
 | `deep_scan` | off | Service versions and operating system with nmap (slower) |
 | `language` | `auto` | Language of the panel, findings, incidents and entity names: `auto` follows Home Assistant (Italian or English) |

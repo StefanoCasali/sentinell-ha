@@ -17,10 +17,19 @@ DEFAULTS = {
     "extra_ports": [],
     "active_probes": True,
     "notify": True,
-    "device_entities": True,
     "ha_links": True,
     "deep_scan": False,
     "language": "auto",
+    "monitor_zigbee": True,
+    "monitor_zwave": True,
+    "monitor_matter": True,
+    "monitor_bluetooth": True,
+    "monitor_mqtt": True,
+    "monitor_access": True,
+    "zigbee2mqtt_in_zigbee": True,
+    "health_interval_minutes": 30,
+    "battery_threshold": 20,
+    "silent_hours": 48,
 }
 
 

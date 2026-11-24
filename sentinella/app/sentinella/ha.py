@@ -277,17 +277,50 @@ def publish(entities: list[dict]) -> None:
                                                  "Home Assistant accepted {a} entities out of {b}").format(a=sent, b=len(entities)))
 
 
-def remove(domain: str, entity_id: str) -> None:
-    """Elimina un'entità (dispositivo dimenticato dall'utente)."""
-    if not _token():
-        return
+def remove_many(domain: str, entity_ids: list[str]) -> bool:
+    """Elimina un gruppo di entità da entrambi i canali; False se Home Assistant non è raggiungibile."""
+    if not _token() and not _manual:
+        return False
     settings = mqtt_settings()
     if settings:
-        mqtt_publish(settings, [
-            (f"{DISCOVERY_PREFIX}/{domain}/sentinella/{entity_id}/config", ""),
-            (f"{STATE_PREFIX}/{entity_id}", ""),
-        ])
-    _request(f"{API}/states/{domain}.sentinella_{entity_id}", method="DELETE")
+        messages = []
+        for entity_id in entity_ids:
+            messages += [(f"{DISCOVERY_PREFIX}/{domain}/sentinella/{entity_id}/config", ""),
+                         (f"{STATE_PREFIX}/{entity_id}", "")]
+        if not mqtt_publish(settings, messages):
+            return False
+    if _token():
+        for entity_id in entity_ids:
+            _request(f"{API}/states/{domain}.sentinella_{entity_id}", method="DELETE")
+    return True
+
+
+_config_cache = {"at": 0.0, "value": None}
+
+
+def core_config() -> dict | None:
+    """Configurazione generale di Home Assistant (lingua, URL esterno...), tenuta in memoria per un'ora."""
+    now = time.time()
+    if now - _config_cache["at"] > 3600 or not _config_cache["value"]:
+        reply = _request(f"{API}/config") if _token() else None
+        _config_cache.update(at=now, value=reply or _config_cache["value"])
+    return _config_cache["value"]
+
+
+def supervisor_text(path: str, headers: dict | None = None) -> str | None:
+    """Risposta testuale del Supervisor (per esempio il log di Home Assistant); None se non concessa."""
+    token = _token()
+    if not token:
+        return None
+    req = urllib.request.Request(f"{SUPERVISOR}{path}", headers={"Authorization": f"Bearer {token}", **(headers or {})})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.read(4_000_000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        log.info("Supervisor answered %s to %s", exc.code, path)
+    except OSError as exc:
+        log.warning("Supervisor unreachable (%s): %s", path, exc)
+    return None
 
 
 _language_cache = {"at": 0.0, "value": None}

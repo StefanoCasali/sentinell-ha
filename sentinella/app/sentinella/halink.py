@@ -1,10 +1,10 @@
-"""Collega i dispositivi trovati in rete a ciò che Home Assistant conosce già.
+"""Legge da Home Assistant ciò che conosce già: dispositivi, entità e il loro stato di salute.
 
 Il registro dei dispositivi non è esposto dall'API REST: lo si legge facendo
-valutare a Home Assistant un template che lo restituisce in JSON. Le
-corrispondenze si cercano per MAC (connessioni e identificativi del
-dispositivo) e per IP (indirizzo di configurazione, attributi e stato delle
-entità).
+valutare a Home Assistant un template che lo restituisce in JSON, a pagine per
+non superare i limiti di dimensione. Serve a due cose: collegare i dispositivi
+della rete locale alla domotica (per MAC o per IP) e analizzare le altre reti
+(Zigbee, Z-Wave, Matter, Bluetooth, MQTT) senza interrogarle direttamente.
 """
 
 import logging
@@ -17,15 +17,51 @@ from .i18n import t
 log = logging.getLogger(__name__)
 
 MAX_ENTITIES = 15
+PAGE = 120
+MAX_PAGES = 40
 IP_RE = r"^\d{1,3}(\.\d{1,3}){3}$"
 
-# {integrations} viene sostituito: le versioni di Home Assistant senza config_entry_attr usano la variante vuota.
+# Per ogni dispositivo si riassume la salute direttamente nel template ("h"):
+# n entità, un = non disponibili, bat = batteria minima, lqi/rssi = segnale,
+# seen = ultima comunicazione, upd = aggiornamento disponibile, zw = stato del nodo Z-Wave,
+# pj = accoppiamento Zigbee aperto. __INTEGRATIONS__ ha una variante vuota per le versioni
+# di Home Assistant senza config_entry_attr.
 TEMPLATE = r"""
 {%- set ns = namespace(devs=[], ents=[]) -%}
-{%- for did in states | map(attribute='entity_id') | map('device_id') | reject('none') | unique -%}
-  {%- set d = namespace(ents=[], doms=[]) -%}
-  {%- for eid in device_entities(did) -%}
-    {%- if state_attr(eid, 'managed_by') != 'sentinella' -%}{%- set d.ents = d.ents + [eid] -%}{%- endif -%}
+{%- set ids = states | map(attribute='entity_id') | map('device_id') | reject('none') | unique | list -%}
+{%- for did in ids[start:start + count] -%}
+  {%- set d = namespace(ents=[], doms=[], n=0, un=0, bat=none, batlow=false, lqi=none, rssi=none, seen=0, upd=false, zw=none, pj=false) -%}
+  {%- for s in expand(device_entities(did)) -%}
+    {%- set a = s.attributes -%}
+    {%- if a.get('managed_by') != 'sentinella' -%}
+      {%- set d.ents = d.ents + [s.entity_id] -%}
+      {%- set d.n = d.n + 1 -%}
+      {%- set dc = a.get('device_class') -%}
+      {%- set unit = a.get('unit_of_measurement') -%}
+      {%- if s.state == 'unavailable' -%}
+        {%- set d.un = d.un + 1 -%}
+      {%- else -%}
+        {%- if s.state != 'unknown' -%}
+          {%- set ts = as_timestamp(s.last_reported | default(s.last_updated), 0) | int(0) -%}
+          {%- if ts > d.seen -%}{%- set d.seen = ts -%}{%- endif -%}
+        {%- endif -%}
+        {%- if s.domain == 'sensor' and dc == 'battery' and s.state | float(-1) >= 0 -%}
+          {%- if d.bat is none or s.state | float(0) < d.bat -%}{%- set d.bat = s.state | float(0) -%}{%- endif -%}
+        {%- elif s.domain == 'binary_sensor' and dc == 'battery' and s.state == 'on' -%}
+          {%- set d.batlow = true -%}
+        {%- elif s.domain == 'sensor' and unit == 'lqi' and s.state | float(-1) >= 0 -%}
+          {%- set d.lqi = s.state | float(0) -%}
+        {%- elif s.domain == 'sensor' and dc == 'signal_strength' and unit == 'dBm' and s.state | float(1) < 0 -%}
+          {%- set d.rssi = s.state | float(0) -%}
+        {%- elif s.domain == 'update' and s.state == 'on' -%}
+          {%- set d.upd = true -%}
+        {%- elif s.domain == 'sensor' and s.entity_id.endswith('_node_status') -%}
+          {%- set d.zw = s.state | string -%}
+        {%- elif s.domain == 'switch' and s.entity_id.endswith('permit_join') and s.state == 'on' -%}
+          {%- set d.pj = true -%}
+        {%- endif -%}
+      {%- endif -%}
+    {%- endif -%}
   {%- endfor -%}
   __INTEGRATIONS__
   {%- set ns.devs = ns.devs + [{
@@ -38,10 +74,13 @@ TEMPLATE = r"""
     'area': (area_name(did) or '') | string,
     'connections': (device_attr(did, 'connections') or []) | list,
     'identifiers': (device_attr(did, 'identifiers') or []) | list,
-    'entities': d.ents,
-    'integrations': d.doms | unique | list
+    'entities': d.ents[:__MAX_ENTITIES__],
+    'integrations': d.doms | unique | list,
+    'h': {'n': d.n, 'un': d.un, 'bat': d.bat, 'batlow': d.batlow, 'lqi': d.lqi, 'rssi': d.rssi,
+          'seen': d.seen, 'upd': d.upd, 'zw': d.zw, 'pj': d.pj}
   }] -%}
 {%- endfor -%}
+{%- if start == 0 -%}
 {%- for s in states -%}
   {%- set a = s.attributes -%}
   {%- set mac = a.get('mac') or a.get('mac_address') -%}
@@ -54,8 +93,9 @@ TEMPLATE = r"""
     }] -%}
   {%- endif -%}
 {%- endfor -%}
-{{ {'devs': ns.devs, 'ents': ns.ents} | tojson }}
-""".replace("__IP_RE__", IP_RE.replace("\\", "\\\\"))
+{%- endif -%}
+{{ {'devs': ns.devs, 'ents': ns.ents, 'total': ids | length} | tojson }}
+""".replace("__IP_RE__", IP_RE.replace("\\", "\\\\")).replace("__MAX_ENTITIES__", str(MAX_ENTITIES + 5))
 
 INTEGRATIONS = """{%- for ce in device_attr(did, 'config_entries') or [] -%}
     {%- set d.doms = d.doms + [config_entry_attr(ce, 'domain') | string] -%}
@@ -64,19 +104,37 @@ INTEGRATIONS = """{%- for ce in device_attr(did, 'config_entries') or [] -%}
 status = {"ok": None, "devices": 0, "error": None}
 
 
+def _page(integrations: str, start: int) -> dict | None:
+    reply = ha._request(f"{ha.API}/template", {
+        "template": TEMPLATE.replace("__INTEGRATIONS__", integrations),
+        "variables": {"start": start, "count": PAGE},
+    })
+    return reply if isinstance(reply, dict) and "devs" in reply else None
+
+
 def fetch() -> dict | None:
     """Registro di Home Assistant in forma compatta; None se non è leggibile."""
     if not ha._token():
         status.update(ok=None, error=t("fuori da Home Assistant", "not running inside Home Assistant"))
         return None
     for integrations in (INTEGRATIONS, ""):
-        reply = ha._request(f"{ha.API}/template", {"template": TEMPLATE.replace("__INTEGRATIONS__", integrations)})
-        if isinstance(reply, dict) and "devs" in reply:
-            status.update(ok=True, devices=len(reply["devs"]), error=None)
-            return reply
+        first = _page(integrations, 0)
+        if first is None:
+            continue
+        registry = {"devs": list(first["devs"]), "ents": first.get("ents", [])}
+        total = int(first.get("total") or 0)
+        for page in range(1, MAX_PAGES):
+            if page * PAGE >= total:
+                break
+            more = _page(integrations, page * PAGE)
+            if more is None:
+                break
+            registry["devs"].extend(more["devs"])
+        status.update(ok=True, devices=len(registry["devs"]), error=None)
+        return registry
     status.update(ok=False, error=t("Home Assistant non ha restituito il registro dei dispositivi (vedi il log)",
-                                   "Home Assistant did not return the device registry (see the log)"))
-    log.warning("Home Assistant device registry not readable: links not updated")
+                                    "Home Assistant did not return the device registry (see the log)"))
+    log.warning("Home Assistant device registry not readable: links and smart home checks not updated")
     return None
 
 
@@ -91,10 +149,10 @@ def _url_host(url: str) -> str | None:
         return None
 
 
-def _is_ours(device: dict) -> bool:
-    """Dispositivo creato solo da Sentinella (via MQTT): non è un collegamento alla domotica."""
+def is_ours(device: dict) -> bool:
+    """Dispositivo creato solo da Sentinella (via MQTT): non fa parte della domotica dell'utente."""
     idents = [str(i[-1]) if isinstance(i, (list, tuple)) and i else str(i) for i in device.get("identifiers", [])]
-    return bool(idents) and all(i.startswith("sentinella") for i in idents) and not device.get("entities")
+    return bool(idents) and all(i.startswith("sentinella") for i in idents)
 
 
 def match(dev: dict, registry: dict) -> dict:
@@ -132,15 +190,14 @@ def match(dev: dict, registry: dict) -> dict:
     devices = []
     for did, reasons in hits.items():
         device = by_id[did]
-        if _is_ours(device):
+        count = int((device.get("h") or {}).get("n") or len(device.get("entities", [])))
+        if is_ours(device) or not count:
             continue
         devices.append({
             "id": did, "name": device.get("name") or "", "manufacturer": device.get("manufacturer") or "",
             "model": device.get("model") or "", "sw": device.get("sw") or "", "area": device.get("area") or "",
             "integrations": [i for i in device.get("integrations", []) if i and i != "None"],
-            "entities": device.get("entities", [])[:MAX_ENTITIES],
-            "entity_count": len(device.get("entities", [])),
+            "entities": device.get("entities", [])[:MAX_ENTITIES], "entity_count": count,
             "match": sorted(reasons),
         })
-    devices = [d for d in devices if d["entity_count"] or d["integrations"] not in ([], ["mqtt"])]
     return {"linked": bool(devices or loose), "devices": devices, "entities": loose[:MAX_ENTITIES]}

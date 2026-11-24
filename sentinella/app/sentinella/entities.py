@@ -7,8 +7,10 @@ Nomi delle entità e valori testuali seguono invece la lingua corrente.
 
 import math
 import re
+import time
 from datetime import datetime, timezone
 
+from . import accesslog, smarthome
 from .i18n import L, t
 
 SEV_LABELS = {
@@ -93,7 +95,7 @@ def _binary(eid, name, state, attrs=None, **extra):
             "attributes": attrs or {}, **extra}
 
 
-def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
+def build(data: dict, status: dict, options: dict | None = None) -> list[dict]:
     devices = list(data["devices"].values())
     online = [d for d in devices if d.get("online")]
     untrusted = [d for d in online if not d.get("trusted")]
@@ -132,13 +134,12 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
     out = [
         # --- dispositivi
         _sensor("dispositivi_online", t("Dispositivi in rete", "Devices online"), len(online), "mdi:lan-connect",
-                {"devices": [_dev_item(d) for d in online[:MAX_ITEMS]], "by_type": by_type},
+                {"by_type": by_type, "trusted": len(online) - len(untrusted), "untrusted": len(untrusted)},
                 unit=u_dev, **measurement),
         _sensor("dispositivi_domotica", t("Dispositivi collegati alla domotica", "Devices linked to the smart home"),
                 len(linked), "mdi:home-automation",
-                {"devices": [{**_dev_item(d), "integrations": ha_summary(d)["ha_integrations"]}
-                             for d in linked[:MAX_ITEMS]],
-                 "not_linked": [_dev_item(d) for d in online if not (d.get("ha") or {}).get("linked")][:MAX_ITEMS]},
+                {"not_linked": len(online) - len(linked),
+                 "integrations": sorted({i for d in linked for i in ha_summary(d)["ha_integrations"]})},
                 unit=u_dev, **measurement),
         _sensor("dispositivi_noti", t("Dispositivi conosciuti", "Known devices"), len(devices), "mdi:lan",
                 unit=u_dev, **measurement),
@@ -208,30 +209,43 @@ def build(data: dict, status: dict, per_device: bool = True) -> list[dict]:
                 device_class="running", entity_category="diagnostic"),
     ]
 
-    if per_device:
-        open_by_device: dict[str, int] = {}
-        for f in open_findings:
-            if f.get("device_key"):
-                open_by_device[f["device_key"]] = open_by_device.get(f["device_key"], 0) + 1
-        for dev in devices:
-            info = dev.get("info") or {}
-            out.append(_binary(
-                device_entity_id(dev["key"]), t("In rete", "Online"), dev.get("online"),
-                # "managed_by" serve a riconoscere le proprie entità quando si rilegge il registro di Home Assistant.
-                {"managed_by": "sentinella", "ip": dev.get("ip"), "mac": dev.get("mac"),
-                 "private_mac": bool(info.get("private_mac")),
-                 "vendor": info.get("manufacturer") or dev.get("vendor"),
-                 "hostname": dev.get("hostname"), "type": info.get("type_label"),
-                 "model": info.get("model"), "detected_name": info.get("friendly_name"),
-                 "operating_system": info.get("os"), "firmware": info.get("firmware"),
-                 "netbios_name": info.get("netbios"), "announced_services": info.get("services", []),
-                 "trusted": bool(dev.get("trusted")), "router": bool(dev.get("is_gateway")),
-                 "open_ports": [" ".join(filter(None, [str(p["port"]), p["service"], p.get("info", {}).get("product")]))
-                                for p in dev.get("ports", [])],
-                 "open_findings": open_by_device.get(dev["key"], 0),
-                 **ha_summary(dev),
-                 "first_seen": iso(dev.get("first_seen")), "last_seen": iso(dev.get("last_seen"))},
-                device_class="connectivity",
-                device={"key": dev["key"], "name": label(dev), "mac": dev.get("mac"),
-                        "vendor": info.get("manufacturer") or dev.get("vendor"), "model": info.get("model")}))
+    # Reti della domotica: solo dati aggregati per rete, nessuna entità per singolo dispositivo.
+    for net in smarthome.view(data)["networks"]:
+        s = net["summary"]
+        if not s["total"]:
+            continue
+        key, name = net["key"], net["label"]
+        down = [d for d in net["devices"] if d["offline"] or d["silent"]]
+        low = [d for d in net["devices"] if d["battery_low"]]
+        out += [
+            _sensor(f"rete_{key}_dispositivi", f"{name}: {t('dispositivi', 'devices')}", s["total"], "mdi:devices",
+                    dict(s), unit=u_dev, **measurement),
+            _sensor(f"rete_{key}_non_raggiungibili", f"{name}: {t('non comunicano', 'not communicating')}", len(down),
+                    "mdi:lan-disconnect", {"unreachable": s["unreachable"], "silent": s["silent"],
+                                           "devices": [d["name"] for d in down[:MAX_ITEMS]]}, unit=u_dev, **measurement),
+            _sensor(f"rete_{key}_batterie_scariche", f"{name}: {t('batterie scariche', 'low batteries')}", len(low),
+                    "mdi:battery-alert",
+                    {"devices": [{"name": d["name"], "battery": d["battery"]} for d in low[:MAX_ITEMS]]},
+                    unit=u_dev, **measurement),
+            _sensor(f"rete_{key}_problemi", f"{name}: {t('problemi aperti', 'open findings')}", s["open_findings"],
+                    "mdi:shield-alert", {"weak_signal": s["weak_signal"], "updates": s["updates"]},
+                    unit=u_find, **measurement),
+            _binary(f"rete_{key}_problema", f"{name}: {t('richiede attenzione', 'needs attention')}",
+                    down or low or s["open_findings"], device_class="problem"),
+        ]
+    # Accessi a Home Assistant: compaiono dopo la prima lettura riuscita del log.
+    access = accesslog.view(data, int(time.time()))
+    if access["read_at"] and (options or {}).get("monitor_access", True):
+        out += [
+            _sensor("accessi_falliti_24h", t("Accessi falliti 24 ore", "Failed logins 24h"), access["attempts_24h"],
+                    "mdi:account-lock",
+                    {"from_internet": access["external_24h"], "local": access["attempts_24h"] - access["external_24h"],
+                     "sources": [{"ip": s["ip"], "attempts": s["count"], "from_internet": s["external"],
+                                  "device": s["device"], "last": s["last"]} for s in access["sources"][:20]]},
+                    unit=t("tentativi", "attempts"), **measurement),
+            _sensor("indirizzi_bloccati", t("Indirizzi bloccati", "Banned addresses"), len(access["banned"]),
+                    "mdi:account-cancel", {"addresses": access["banned"][:MAX_ITEMS]}, **measurement),
+            _binary("tentativi_accesso", t("Tentativi di accesso", "Login attempts"), access["attempts_24h"],
+                    {"from_internet": access["external_24h"]}, device_class="safety"),
+        ]
     return out

@@ -9,6 +9,8 @@ Home Assistant add-on that checks the security of your home network: connected d
 - Reads the ports the router opened to the Internet through UPnP and closes them on confirmation.
 - Reports incidents: new devices, newly opened ports, new forwards to the Internet.
 - Shows which network devices are already linked to a Home Assistant integration.
+- Watches the smart home networks (Zigbee, Z-Wave, Matter, Bluetooth, MQTT): devices not communicating, low batteries, weak signal, new devices.
+- Reports failed login attempts to Home Assistant and banned addresses.
 - Publishes sensors and events to Home Assistant through MQTT discovery or the API.
 - Panel, findings and entity names in English or Italian.
 
@@ -48,7 +50,9 @@ The interface is at http://127.0.0.1:8099. State and options live in `sentinella
 | `portscan.py` | TCP port scan |
 | `probes.py` | Non-destructive service checks |
 | `enrich.py` | Device identification: mDNS, SSDP, NetBIOS, deep nmap, type |
-| `halink.py` | Link with devices and entities already in Home Assistant |
+| `halink.py` | Reads devices, entities and their health from Home Assistant |
+| `smarthome.py` | Zigbee, Z-Wave, Matter, Bluetooth and MQTT analysis |
+| `accesslog.py` | Failed logins and banned addresses from the Home Assistant log |
 | `upnp.py` | Reading and closing the router's UPnP forwards |
 | `rules.py` | Rules, remediation texts, manual checklist |
 | `engine.py` | Scan, finding state, incidents, actions |

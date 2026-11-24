@@ -15,8 +15,38 @@ configuration:
     name: Notifications
     description: Creates a Home Assistant notification for every security incident.
   device_entities:
-    name: One sensor per device
-    description: Creates an "Online" binary sensor for every device found on the network.
+    name: One sensor per device (no longer used)
+    description: Deprecated. Since 0.6.0 only aggregate sensors are published; existing per-device sensors are removed automatically.
+  monitor_zigbee:
+    name: Monitor Zigbee
+    description: Zigbee section (ZHA, Zigbee2MQTT, deCONZ) - devices not communicating, batteries, signal, updates.
+  monitor_zwave:
+    name: Monitor Z-Wave
+    description: Z-Wave section (Z-Wave JS).
+  monitor_matter:
+    name: Monitor Matter
+    description: Matter section.
+  monitor_bluetooth:
+    name: Monitor Bluetooth
+    description: Bluetooth section (BTHome, Xiaomi BLE, SwitchBot and other Bluetooth integrations).
+  monitor_mqtt:
+    name: Monitor MQTT
+    description: MQTT section - devices that reach Home Assistant through MQTT.
+  monitor_access:
+    name: Monitor access to Home Assistant
+    description: Access section - failed login attempts and banned addresses found in the Home Assistant log.
+  zigbee2mqtt_in_zigbee:
+    name: Zigbee2MQTT devices under Zigbee
+    description: On - Zigbee2MQTT devices appear only in the Zigbee section and MQTT shows everything else. Off - they are counted under MQTT. A device is never reported in both.
+  health_interval_minutes:
+    name: Smart home check interval (minutes)
+    description: Minutes between one smart home check and the next. These checks are light and independent of the network scan.
+  battery_threshold:
+    name: Low battery threshold (%)
+    description: Battery level at or below which a device is reported.
+  silent_hours:
+    name: Silence threshold (hours)
+    description: Hours without any report after which a battery-powered device is considered not communicating.
   ha_links:
     name: Link devices to the smart home
     description: Looks up which Home Assistant devices and entities already correspond to each network device.
